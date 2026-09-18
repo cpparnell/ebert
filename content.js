@@ -118,6 +118,20 @@ function el(tag, className, text) {
   return node;
 }
 
+// Marks a rating that belongs to the whole series ("Carlos" for "Carlos: Part 2"): a stacked
+// icon that widens to spell out "Series Rating" on hover.
+function seriesTag() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 10 10");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML =
+    '<rect x="3" y="0.75" width="6.25" height="6.25" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>' +
+    '<rect x="0.75" y="3" width="6.25" height="6.25" rx="1" fill="currentColor"/>';
+  const tag = el("span", "ebert-series");
+  tag.append(svg, el("span", "ebert-series-label", "Series Rating"));
+  return tag;
+}
+
 // Replaces any existing badge, so a score painted from a stale cache entry gets updated in place.
 // Letterboxd withholds the average for films with few ratings; a dash tells that apart from a miss.
 function renderBadge(container, film) {
@@ -127,8 +141,12 @@ function renderBadge(container, film) {
     badge.title = "Letterboxd: not enough ratings yet";
     badge.append(el("span", "ebert-star", "★"), el("span", null, "–"));
   } else {
-    badge.title = `Letterboxd ${film.rating.toFixed(2)} · ${formatCount(film.ratingCount)} ratings`;
+    badge.title = `Letterboxd ${film.series ? "series rating " : ""}${film.rating.toFixed(2)} · ${formatCount(film.ratingCount)} ratings`;
     badge.append(el("span", "ebert-star", "★"), el("span", null, film.rating.toFixed(1)));
+  }
+  if (film.series) {
+    badge.classList.add("ebert-badge--series");
+    badge.append(seriesTag());
   }
   const existing = container.querySelector(".ebert-badge");
   if (existing) existing.replaceWith(badge);
@@ -147,6 +165,7 @@ function renderDetail(anchor, film) {
     link.append(
       el("span", "ebert-star", "★"),
       el("span", "ebert-score", film.rating.toFixed(2)),
+      ...(film.series ? [seriesTag()] : []),
       el("span", "ebert-label", "Letterboxd"),
       el("span", "ebert-muted", `${formatCount(film.ratingCount)} ratings`)
     );

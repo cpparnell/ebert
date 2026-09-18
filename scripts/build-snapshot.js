@@ -4,7 +4,7 @@
 //   node scripts/build-snapshot.js [out=dist/snapshot.json]     (LIMIT=50 for a quick partial run)
 const fs = require("fs");
 const path = require("path");
-const { parseFilmPage, isMatch, resolveFilm } = require("../lib/letterboxd.js");
+const { parseFilmPage, isMatch, resolveFilm, titleVariants } = require("../lib/letterboxd.js");
 const { parseCatalog, CATALOG_URL } = require("../lib/criterion.js");
 const { SNAPSHOT_URL } = require("../lib/snapshot.js");
 
@@ -30,20 +30,29 @@ async function politeFetch(url) {
   }
 }
 
-const trim = (film) => film && { url: film.url, rating: film.rating, ratingCount: film.ratingCount };
+// Installments ("Carlos: Part 2") always record `series`: whether the rating is the whole work's.
+const trim = (film, installment) =>
+  film && {
+    url: film.url,
+    rating: film.rating,
+    ratingCount: film.ratingCount,
+    ...(installment && { series: !!film.series }),
+  };
 
-// A film matched before is re-read from its known URL (one request); anything else is resolved from scratch.
+// A film matched before is re-read from its known URL (one request); anything else is resolved from
+// scratch, as is an installment from a snapshot that predates the `series` flag.
 async function resolve(film, previous) {
-  if (previous?.lb?.url) {
+  const installment = titleVariants(film.title).length > 1;
+  if (previous?.lb?.url && (!installment || "series" in previous.lb)) {
     const res = await politeFetch(previous.lb.url);
     if (res.ok) {
       const found = parseFilmPage(await res.text());
-      if (found && isMatch(found, film)) return trim(found);
+      if (found && isMatch(found, film)) return trim({ ...found, series: previous.lb.series }, installment);
     } else if (res.status !== 404) {
       throw new Error(`Letterboxd responded ${res.status} for ${previous.lb.url}`);
     }
   }
-  return trim(await resolveFilm(film, politeFetch));
+  return trim(await resolveFilm(film, politeFetch), installment);
 }
 
 async function loadPrevious() {

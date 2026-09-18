@@ -54,6 +54,14 @@
   font-size: 11px;
 }
 
+.ebert-badge--unrated {
+  color: var(--ebert-text-muted);
+}
+
+.ebert-badge--unrated .ebert-star {
+  color: var(--ebert-text-muted);
+}
+
 /* ---------- Film detail page ---------- */
 
 .ebert-detail {

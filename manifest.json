@@ -17,7 +17,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.criterionchannel.com/*"
+        "https://www.criterionchannel.com/*",
+        "https://films.criterionchannel.com/*"
       ],
       "js": [
         "lib/shared.js",

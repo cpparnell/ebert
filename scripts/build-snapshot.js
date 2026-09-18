@@ -10,7 +10,7 @@ const { SNAPSHOT_URL } = require("../lib/snapshot.js");
 
 const OUT = process.argv[2] || "dist/snapshot.json";
 const LIMIT = +process.env.LIMIT || Infinity;
-const CONCURRENCY = 3;
+const CONCURRENCY = 1; // one request at a time (~2/s, ~30 min a run): nothing needs it faster
 const MAX_ERROR_RATE = 0.1; // above this, assume we're being blocked and publish nothing
 const HEADERS = { "user-agent": "ebert-snapshot (+https://github.com/cpparnell/ebert)" };
 

@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Ebert",
+  "version": "0.1.0",
+  "description": "Letterboxd ratings on The Criterion Channel.",
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://letterboxd.com/*",
+    "https://cpparnell.github.io/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.criterionchannel.com/*"
+      ],
+      "js": [
+        "lib/shared.js",
+        "lib/letterboxd.js",
+        "lib/criterion.js",
+        "lib/snapshot.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

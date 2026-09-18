@@ -1,0 +1,110 @@
+/* Tokens mirror Criterion's own UI: Montserrat, the duration chip's
+   translucent black pill, and the grey used for secondary text. */
+:root {
+  --ebert-green: #00e054;
+  --ebert-chip-bg: rgba(0, 0, 0, 0.62);
+  --ebert-text: #fff;
+  --ebert-text-secondary: rgb(190, 190, 187);
+  --ebert-text-muted: rgba(190, 190, 187, 0.7);
+  --ebert-font: Montserrat, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+}
+
+@keyframes ebert-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.ebert-star {
+  color: var(--ebert-green);
+  /* ★ isn't in Montserrat; pin the fallback so it renders the same everywhere. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", sans-serif;
+  font-weight: 400;
+}
+
+/* ---------- Browse cards ---------- */
+
+.browse-image-container {
+  position: relative;
+}
+
+/* Top-left, mirroring the duration chip's inset in the bottom-right.
+   The top-right holds the year tab that's baked into Criterion's artwork. */
+.ebert-badge {
+  position: absolute;
+  top: 10px;
+  left: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px 3px 6px;
+  border-radius: 5px;
+  background: var(--ebert-chip-bg);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: var(--ebert-text);
+  font: 600 12px/17px var(--ebert-font);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  animation: ebert-in 0.25s ease-out;
+}
+
+.ebert-badge .ebert-star {
+  font-size: 11px;
+}
+
+/* ---------- Film detail page ---------- */
+
+.ebert-detail {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: fit-content;
+  margin: 10px 0 6px;
+  color: var(--ebert-text-secondary);
+  font: 400 14px/1.4 var(--ebert-font);
+  text-decoration: none;
+  animation: ebert-in 0.3s ease-out;
+}
+
+.ebert-detail:hover,
+.ebert-detail:focus-visible {
+  color: var(--ebert-text-secondary);
+  text-decoration: none;
+}
+
+.ebert-detail .ebert-star {
+  font-size: 15px;
+  margin-right: -4px;
+}
+
+.ebert-score {
+  color: var(--ebert-text);
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.ebert-label {
+  font-weight: 600;
+  transition: color 0.15s;
+}
+
+.ebert-detail:hover .ebert-label,
+.ebert-detail:focus-visible .ebert-label {
+  color: var(--ebert-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ebert-muted {
+  color: var(--ebert-text-muted);
+  font-size: 13px;
+}
+
+.ebert-muted::before {
+  content: "·";
+  margin-right: 8px;
+}

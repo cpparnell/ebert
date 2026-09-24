@@ -606,7 +606,9 @@ function setupFilters() {
   seenSection.append(seen.list, seenHint);
   body.append(seenSection);
 
-  panel.append(group);
+  // First in the panel, ahead of the site's own groups: these are the filters the panel can't
+  // otherwise offer, and the reason to open it at all.
+  panel.prepend(group);
   addPanelMenuItem(group);
 
   // The panel is a modal over the table, so the result of a filter is only visible once it's
@@ -676,7 +678,7 @@ function addPanelMenuItem(group) {
     group.scrollIntoView({ block: "start", behavior: "smooth" });
   });
   item.append(link);
-  titles.append(item);
+  titles.prepend(item); // matches the group's place in the panel beside it
 }
 
 // films.criterionchannel.com sorts on the server (?sort=, which answers 500 to values it doesn't

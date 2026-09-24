@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Ebert",
   "version": "0.1.0",
-  "description": "Letterboxd ratings on The Criterion Channel.",
+  "description": "Letterboxd integration for the Criterion Channel",
   "permissions": [
     "storage",
     "alarms"

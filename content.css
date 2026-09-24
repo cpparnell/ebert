@@ -157,11 +157,11 @@
 }
 
 /* Padding needs to outrank `.filters .filter-group`, whose shorthand would otherwise zero it.
-   The site's groups end on a 50px margin under their last option list; ours is the last thing in
-   the panel, so it carries its own bottom gap or it sits flush against the end of the scroll. */
+   Ours is the first group in the panel, so it starts flush with the top the way Genres used to,
+   and carries below it the same 50px the site leaves between its own groups. */
 .filters .ebert-filter-group.filter-group {
-  padding-top: 48px;
-  padding-bottom: 64px;
+  padding-top: 0;
+  padding-bottom: 50px;
 }
 
 .ebert-filter-body {

@@ -2,3 +2,4 @@ dump/
 .DS_Store
 dist/
 .claude/
+CLAUDE.md

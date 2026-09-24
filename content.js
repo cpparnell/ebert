@@ -3,45 +3,28 @@ const CRITERION_TTL = 3650 * DAY_MS;
 const CRITERION_MISS_TTL = DAY_MS;
 const MAX_ATTEMPTS = 4;
 const criterionLimit = limiter(4);
-const seenCards = new WeakSet();
+const seenCards = new WeakMap(); // card -> the film id it was scanned for
 const nearCards = new WeakSet(); // within rootMargin of the viewport right now
 const busyCards = new WeakSet(); // queued or in flight
 
 class TransientError extends Error {}
 
-// The h1 is the clean title; og:title on collection pages carries " - <Collection> - The Criterion Channel".
-function extractCriterionMeta(doc) {
-  const title =
-    doc.querySelector("h1.video-title, h1.collection-title")?.textContent.trim() ||
-    doc.querySelector('meta[property="og:title"]')?.content?.split(" - ")[0].trim();
-  // Only the page's own description: the body also holds credits of other films (a collection's
-  // episode list), which would pin a collection or teaser to the wrong film.
-  // Credit line is "Directed by X • 1994 • Country", but some pages put the country before the year.
-  const description = doc
-    .querySelector('meta[name="description"]')
-    ?.content.replace(/&nbsp;|\u00a0/g, " ");
-  const line = description?.match(/Directed by\s+([^\n]+)/)?.[1];
-  if (!title || !line) return null;
-  const [director, ...rest] = line.split("•").map((s) => s.trim());
-  const year = rest.map((s) => s.match(/^\d{4}$/)?.[0]).find(Boolean);
-  if (!director || !year) return null;
-  return {
-    title,
-    year: +year,
-    directors: director.split(/\s*(?:,|\band\b|&)\s*/).filter(Boolean),
-  };
-}
+// Everything Criterion-specific (selectors, URLs, the API) is in lib/site.js.
+const SEL = SELECTORS;
 
-function ccKey(href) {
-  const url = new URL(href, location.href);
-  return url.origin === location.origin ? `cc4:${url.pathname}` : null;
-}
+// Criterion's own record of a film, keyed by its media id. Bump the version to invalidate.
+const ccKey = (id) => `cc5:${id}`;
 
-// A film already known from its page or the shared snapshot, without any network.
-function cachedMeta(href) {
-  const key = ccKey(href);
-  if (!key) return null;
-  return cachePeek(key)?.v || cachePeek(SNAPSHOT_KEY)?.v?.films?.[criterionSlug(href)] || null;
+// Criterion's API titles some films differently from the catalog and the cards: an episode is just
+// "Episode 1" where its card says "Joséphine en tournée: Episode 1", and there are smaller drifts
+// ("The IX Olympiad in Amsterdam" for "…at Amsterdam"). The title the page prints is the one the
+// catalog and the snapshot go by, so it wins over the API's; the API is kept for directors and year.
+const withTitle = (meta, title) => (meta && title ? { ...meta, title } : meta);
+
+// A film already known from the shared snapshot (which has the catalog's title) or the API,
+// without any network.
+function cachedMeta(id, printedTitle) {
+  return cachePeek(SNAPSHOT_KEY)?.v?.films?.[id] || withTitle(cachePeek(ccKey(id))?.v, printedTitle) || null;
 }
 
 // Snapshot first (refreshed nightly for everyone), then this install's own live lookups.
@@ -50,58 +33,39 @@ function cachedFilm(key) {
   return shared ? { v: shared, stale: false } : cachePeek(key);
 }
 
-async function criterionMetaFor(href, wanted) {
-  const key = ccKey(href);
-  if (!key) return null;
+async function criterionMetaFor(id, wanted, printedTitle) {
+  const key = ccKey(id);
   const cached = await cacheGet(key);
-  const known = cachedMeta(href);
+  const known = cachedMeta(id, printedTitle);
   if (known) return known;
   if (cached && !cached.stale) return cached.v;
 
-  const res = await politeFetch(criterionLimit, href, { credentials: "include" }, wanted);
+  const res = await politeFetch(criterionLimit, mediaUrl(id), {}, wanted);
   if (!res.ok) throw new TransientError(`criterion-http-${res.status}`);
-  const doc = new DOMParser().parseFromString(await res.text(), "text/html");
-  const meta = extractCriterionMeta(doc);
+  const meta = parseMedia(await res.json());
   await cacheSet(key, meta, meta ? CRITERION_TTL : CRITERION_MISS_TTL);
-  return meta;
+  return withTitle(meta, printedTitle);
 }
 
-// films.criterionchannel.com lists the whole catalog as a table whose rows carry title, director
-// and year inline, so its "cards" need no page fetch; everywhere else cards are www browse cards.
-const ON_CATALOG = location.hostname === "films.criterionchannel.com";
-
-const CARD_SELECTOR = ON_CATALOG
-  ? "tr.criterion-channel__tr[data-role='grid-film']"
-  : // Browse rows tag cards with item-type-*; collection pages (e.g. /southern-gothic) leave cards untyped.
-    ".browse-item-card.item-type-movie, .browse-item-card.item-type-video, .browse-item-card:not([class*='item-type-'])";
-
-// The film's link and the element the badge is drawn over, or null if the card lacks either.
+// The film's id and the element the badge is drawn over, or null if the card isn't a film's
+// (collections and supplements share the card) or lacks either.
 function cardParts(card) {
-  const link = ON_CATALOG
-    ? card.querySelector(".criterion-channel__td--title a[href]")
-    : card.querySelector(".browse-item-title a[href]");
-  const container = ON_CATALOG
-    ? card.querySelector(".criterion-channel__film-img-wrap")
-    : card.querySelector(".browse-image-container");
-  return link && container ? { href: link.href, container } : null;
+  const link = card.querySelector(SEL.cardLink);
+  const id = link && criterionId(link.href);
+  const container = card.querySelector(SEL.cardImage);
+  return id && container ? { id, container } : null;
 }
 
-// Same rules as parseCatalog, so the key matches the snapshot's entry for this film.
-function catalogRowMeta(row) {
-  // textContent decodes entities once; some cells are double-escaped ("Ken&amp;#039;ichi").
-  const cell = (name) =>
-    decodeEntities(row.querySelector(`.criterion-channel__td--${name}`)?.textContent || "")
-      .replace(/\s+/g, " ")
-      .trim();
-  const title = cell("title");
-  const year = cell("year");
-  if (!title || !/^(18|19|20)\d\d$/.test(year)) return null;
-  return { title, year: +year, directors: splitDirectors(cell("director")) };
+// Title and year as the card prints them. Enough for the cache key (lbKey ignores directors), so a
+// film looked up before paints without asking Criterion for anything; a live lookup needs the API.
+function cardMeta(card) {
+  const title = card.querySelector(SEL.cardTitle)?.textContent.trim();
+  const year = card.querySelector(SEL.cardYear)?.textContent.trim();
+  return title && /^(18|19|20)\d\d$/.test(year) ? { title, year: +year } : null;
 }
 
-const knownMeta = (card, href) => (ON_CATALOG ? catalogRowMeta(card) : cachedMeta(href));
-const metaFor = (card, href, wanted) =>
-  ON_CATALOG ? Promise.resolve(catalogRowMeta(card)) : criterionMetaFor(href, wanted);
+const printedTitle = (card) => card.querySelector(SEL.cardTitle)?.textContent.trim() || null;
+const knownMeta = (card, id) => cachedMeta(id, printedTitle(card)) || cardMeta(card);
 
 // The snapshot and this install's own results are mirrored here too, so a film already known needs
 // no message at all. That matters more than one round trip: the MV3 worker sleeps after 30s idle,
@@ -193,15 +157,26 @@ function renderBadge(container, film) {
     badge.append(markTag(mark));
     badge.title += ` · ${markTitle(mark)}`;
   }
+  // The badge is positioned against the artwork, whatever the site's own CSS does with it.
+  container.classList.add("ebert-anchor");
   const existing = container.querySelector(".ebert-badge");
   if (existing) existing.replaceWith(badge);
   else container.appendChild(badge);
 }
 
-let detail = null; // { anchor, film }, kept so the line can be redrawn when the user's data syncs
+// ---------- Film page ----------
+// The site navigates client-side, so a film page can arrive without a page load and its header can
+// be re-rendered under us. syncDetail runs on every DOM change: it drops the line when the page
+// changes, redraws it when the header was replaced, and looks up each film page once per visit.
+let detail = null; // { path, film }, kept so the line can be redrawn, e.g. when the user's data syncs
+let detailTried = null; // the path last looked up, so a miss isn't retried on every mutation
 
-function renderDetail(anchor, film) {
-  detail = { anchor, film };
+const detailAnchor = () => document.querySelector(SEL.detailMeta) || document.querySelector(SEL.detailTitle);
+
+function renderDetail() {
+  const anchor = detailAnchor();
+  if (!detail || !anchor) return;
+  const { film } = detail;
   const link = el("a", "ebert-detail");
   link.href = film.url;
   link.target = "_blank";
@@ -229,20 +204,37 @@ function renderDetail(anchor, film) {
   else anchor.after(link);
 }
 
-async function handleDetailPage() {
-  if (ON_CATALOG || document.body.classList.contains("browse")) return;
-  const h1 = document.querySelector("h1.video-title, h1.collection-title");
-  const meta = h1 && extractCriterionMeta(document);
-  if (!meta) return;
-  const film = await lookup({ ...meta, slug: criterionSlug(location.href) }).catch((err) => console.warn("[ebert]", err));
-  if (!film) return;
-  const badges = h1.parentElement.querySelector("h5.badges-container");
-  renderDetail(badges || h1, film);
+function syncDetail() {
+  const path = location.pathname;
+  if (detail && detail.path !== path) {
+    detail = null;
+    document.querySelector(".ebert-detail")?.remove();
+  }
+  if (detail) {
+    if (!document.querySelector(".ebert-detail")) renderDetail();
+    return;
+  }
+  const id = criterionId(path);
+  if (!id || detailTried === path) return;
+  detailTried = path;
+  const here = () => location.pathname === path;
+  criterionMetaFor(id, here, document.querySelector(SEL.detailTitle)?.textContent.trim())
+    .then((meta) => meta && here() && lookup(meta))
+    .then((film) => {
+      if (!film || !here()) return;
+      detail = { path, film };
+      renderDetail();
+    })
+    .catch((err) => {
+      if (!(err instanceof Cancelled)) console.warn("[ebert]", path, err);
+    });
 }
 
+// ---------- Cards ----------
+
 // Paints straight from the in-memory cache; returns true only if nothing needs refreshing.
-function paintFromCache(card, { href, container }) {
-  const meta = knownMeta(card, href);
+function paintFromCache(card, { id, container }) {
+  const meta = knownMeta(card, id);
   if (!meta) return false;
   card.dataset.ebertKey = lbKey(meta);
   const film = cachedFilm(lbKey(meta));
@@ -259,43 +251,63 @@ function repaint(key, film) {
   }
 }
 
-// Every badge already drawn, e.g. after the user's watched films sync.
+// Every card whose film is known, e.g. after the user's watched films sync or a new snapshot.
+// One pass over the keyed cards, rather than a query per key, since a snapshot carries every film
+// in the catalog.
 function repaintAll() {
   for (const card of document.querySelectorAll("[data-ebert-key]")) {
-    const parts = cardParts(card);
     const film = cachedFilm(card.dataset.ebertKey)?.v;
-    if (parts && film && parts.container.querySelector(".ebert-badge")) renderBadge(parts.container, film);
+    const parts = film && cardParts(card);
+    if (parts) renderBadge(parts.container, film);
   }
-  if (detail) renderDetail(detail.anchor, detail.film);
+  if (detail) renderDetail();
+}
+
+// Results arrive in bursts — the worker resolving every snapshot miss on the page, or a sync
+// rewriting the user's films — so the changes are collected and applied once per frame.
+const dirtyKeys = new Map(); // lbKey -> the film that just landed
+let dirtyAll = false;
+let refilter = false;
+let flushQueued = false;
+
+function queueFlush() {
+  if (flushQueued) return;
+  flushQueued = true;
+  requestAnimationFrame(() => {
+    flushQueued = false;
+    if (dirtyAll) repaintAll();
+    else for (const [key, film] of dirtyKeys) repaint(key, film);
+    dirtyKeys.clear();
+    dirtyAll = false;
+    // A rating or a mark arriving can move a film in or out of the current filter.
+    if (refilter && filtering()) applyFilters();
+    refilter = false;
+  });
 }
 
 // A stale score is shown first and refreshed in the background, and a new snapshot can land
 // mid-visit (e.g. just after install); repaint the affected cards either way.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  let refilter = false;
   for (const [key, { newValue }] of Object.entries(changes)) {
     if (key.startsWith("lb:")) {
-      repaint(key, newValue?.v);
+      dirtyKeys.set(key, newValue?.v);
       refilter = true;
     }
-    if (key === SNAPSHOT_KEY) {
-      for (const [k, film] of snapshotByKey(newValue?.v)) repaint(k, film);
+    // Both touch every card, so they're a single pass rather than one per film.
+    if (key === SNAPSHOT_KEY || key === USER_KEY || key === USERNAME_KEY) {
+      dirtyAll = true;
       refilter = true;
     }
-    if (key === USER_KEY || key === USERNAME_KEY) {
-      repaintAll();
-      refilter = true;
-    }
-    // Another Criterion tab changed the filters.
+    if (key === USERNAME_KEY) panel?.sync();
+    // Another tab changed the filters.
     if (key === FILTERS_KEY && JSON.stringify(newValue?.v) !== JSON.stringify(filters)) {
       filters = normalizeFilters(newValue?.v);
-      syncFilterControls();
+      panel?.sync();
       refilter = true;
     }
   }
-  // A rating or a mark arriving can move a row in or out of the current filter.
-  if (refilter && ON_CATALOG) applyFilters();
+  queueFlush();
 });
 
 function settle(card, state) {
@@ -307,19 +319,21 @@ function settle(card, state) {
 // data-ebert on each card records its outcome, for diagnosing misses from DevTools.
 async function processCard(card) {
   const parts = cardParts(card);
-  if (!parts) return settle(card, "no-link-or-image");
-  const { href, container } = parts;
+  if (!parts) return settle(card, "not-a-film");
+  const { id, container } = parts;
   busyCards.add(card);
   card.dataset.ebert = "pending";
-  const wanted = () => nearCards.has(card);
+  const wanted = () => nearCards.has(card) && seenCards.get(card) === id;
   try {
-    const meta = await metaFor(card, href, wanted);
+    const meta = await criterionMetaFor(id, wanted, printedTitle(card));
     if (!meta) return settle(card, "no-criterion-meta");
     card.dataset.ebertQuery = `${meta.title} | ${meta.year} | ${meta.directors.join(", ")}`;
     card.dataset.ebertKey = lbKey(meta);
     if (!wanted()) throw new Cancelled();
-    const film = await lookup({ ...meta, slug: criterionSlug(href) });
+    const film = await lookup(meta);
     if (!film) return settle(card, "no-letterboxd-match");
+    // The card may have been handed to another film while this was in flight.
+    if (seenCards.get(card) !== id) return;
     renderBadge(container, film);
     settle(card, film.rating == null ? "no-rating" : "ok");
   } catch (err) {
@@ -334,12 +348,14 @@ async function processCard(card) {
     const attempts = (+card.dataset.ebertAttempts || 0) + 1;
     card.dataset.ebertAttempts = attempts;
     settle(card, err instanceof TransientError ? err.message : `error: ${err}`);
-    console.warn("[ebert]", href, err);
+    console.warn("[ebert]", id, err);
     if (err instanceof TransientError && attempts < MAX_ATTEMPTS) {
       setTimeout(() => visibility.observe(card), 2000 * 2 ** attempts);
     }
   } finally {
     busyCards.delete(card);
+    // Handed a new film mid-flight: the observer won't fire again for a card already in view.
+    if (seenCards.get(card) !== id && nearCards.has(card)) processCard(card);
   }
 }
 
@@ -358,22 +374,42 @@ const visibility = new IntersectionObserver(
   { rootMargin: "300px" }
 );
 
+// React keeps card elements across renders, so a card can be handed a different film (a rail
+// re-sorting, All Films changing its sort) or have its artwork re-rendered without our badge. A
+// card is taken up again whenever its film differs from the one it was scanned for, or its badge
+// has gone missing.
+function stale(card, parts) {
+  if (!seenCards.has(card)) return true;
+  if (seenCards.get(card) !== (parts?.id ?? null)) {
+    parts?.container.querySelector(".ebert-badge")?.remove();
+    delete card.dataset.ebertKey;
+    return true;
+  }
+  const painted = card.dataset.ebert === "ok" || card.dataset.ebert === "no-rating";
+  return painted && !parts.container.querySelector(".ebert-badge");
+}
+
+// Painting every known card in the scan itself is what makes a page instant: a rail's few dozen
+// cards, or a page of All Films, badged in the frame the markup lands in, with no observer round trip.
 function scanCards() {
-  for (const card of document.querySelectorAll(CARD_SELECTOR)) {
-    if (seenCards.has(card)) continue;
-    seenCards.add(card);
+  for (const card of document.querySelectorAll(SEL.card)) {
     const parts = cardParts(card);
+    if (!stale(card, parts)) continue;
+    seenCards.set(card, parts?.id ?? null);
     if (parts && paintFromCache(card, parts)) {
       card.dataset.ebert = "ok";
       continue;
     }
     visibility.observe(card);
   }
+  syncDetail();
+  syncAllFilms();
 }
 
 let scanQueued = false;
 
 function start() {
+  filters = normalizeFilters(cachePeek(FILTERS_KEY)?.v);
   new MutationObserver(() => {
     if (scanQueued) return;
     scanQueued = true;
@@ -385,44 +421,288 @@ function start() {
   scanCards();
 }
 
-// ---------- Catalog filters ----------
-// The catalog ships every row in one page, so filtering is a class on rows, not a round trip.
-// The controls live inside the site's own Advanced Filters panel, as one more group beside
-// Genres/Decades/Countries/Directors, and ask only what Letterboxd knows and that panel can't:
-// rating, runtime, and the user's own history.
+// ---------- All Films filters ----------
+// All Films (ALL_FILMS_PATH) gets a "Letterboxd" group at the top of its filter panel, asking only
+// what Letterboxd knows and the site's own filters can't: minimum rating, runtime range, and the
+// user's watched/watchlist state. The rules are pure functions in lib/criterion.js.
 //
-// Nothing here reaches the site's filter logic. StoreFilters captures its checkboxes once at
-// init (`.filter-group-option input[type=checkbox]`) and only those feed the query string its
-// Apply button navigates to, so ours are injected later and deliberately not given that class.
-// Apply still works: it reloads with the site's filters, and ours come back from storage.
+// The page loads its grid 60 films at a time as you scroll, so hiding the cards that fail would
+// leave a strict filter with a near-empty page — and the site's loader doesn't fire again for a
+// sentinel already in view. So while a filter is on, the site's grid is set aside and ours takes
+// its place: the whole list comes from the API the page itself uses, with the page's own query
+// string, so the site's genres, decades, countries, directors and sort all still apply; each film
+// that passes is drawn as a copy of one of the site's own cards. To the rest of this script those
+// copies are ordinary cards, so they get their badges the usual way.
 const FILTERS_KEY = "catalog:filters";
 const FILTERS_TTL = 3650 * DAY_MS;
+const RESULTS_PAGE = 60; // cards drawn at a time, as the site does
+const RESULTS_AHEAD_PX = 1500; // how far below the viewport the next batch is drawn
 
 let filters = DEFAULT_FILTERS;
-// Both replaced by setupFilters. applyFilters runs again whenever ratings or the user's marks land.
-let applyFilters = () => {};
-let syncFilterControls = () => {};
+const onAllFilms = () => location.pathname === ALL_FILMS_PATH;
+const filtering = () => !isDefaultFilters(filters);
 
-const rowFacts = new WeakMap();
+// The site's list for a query string, every page of it, kept for the visit.
+const catalogs = new Map(); // location.search -> Promise<films[]>
 
-// A row's Letterboxd cache key, fixed for the life of the page unlike the rating behind it.
-function rowKey(row) {
-  if (!rowFacts.has(row)) {
-    const meta = catalogRowMeta(row);
-    rowFacts.set(row, meta ? lbKey(meta) : null);
+function loadCatalog(search) {
+  if (!catalogs.has(search)) {
+    const page = async (key) => {
+      const res = await politeFetch(criterionLimit, allFilmsUrl(key, search));
+      if (!res.ok) throw new TransientError(`criterion-http-${res.status}`);
+      return parseAllFilms(await res.json());
+    };
+    const pending = (async () => {
+      const first = await page("1");
+      let pages = [first];
+      if (/^\d+$/.test(first.next || "") && first.total) {
+        // Keys are page numbers, so the rest can be asked for at once.
+        const last = Math.ceil(first.total / ALL_FILMS_PAGE);
+        const keys = [];
+        for (let p = +first.next; p <= last; p++) keys.push(String(p));
+        pages = pages.concat(await Promise.all(keys.map(page)));
+      } else {
+        for (let next = first.next; next; ) {
+          const more = await page(next);
+          pages.push(more);
+          next = more.next;
+        }
+      }
+      const byId = new Map();
+      for (const { films } of pages) for (const film of films) byId.set(film.id, film);
+      return [...byId.values()];
+    })();
+    pending.catch(() => catalogs.delete(search)); // retried on the next change
+    catalogs.set(search, pending);
   }
-  return rowFacts.get(row);
+  return catalogs.get(search);
 }
 
-// Everything the filters ask about. A row with no Letterboxd match keeps null values, so an
-// active rating or runtime filter hides it rather than showing an unknown.
-function rowFilm(row) {
-  const key = rowKey(row);
-  const lb = key ? cachedFilm(key)?.v : null;
-  return { rating: lb?.rating ?? null, runtime: lb?.runtime ?? null, mark: lb ? markFor(lb) : null };
+// Everything the filters ask about. The runtime is Criterion's own, which every film has; the
+// rating and the user's history need a Letterboxd match, so a film without one fails an active
+// rating or watched filter rather than showing an unknown.
+function filmFacts(film) {
+  // A film the catalog dates badly (year null) was looked up with the year from its own record.
+  const meta = film.year ? film : cachedMeta(film.id, film.title) || film;
+  const lb = cachedFilm(lbKey(meta))?.v;
+  return { rating: lb?.rating ?? null, runtime: film.runtime ?? lb?.runtime ?? null, mark: lb ? markFor(lb) : null };
 }
 
-const catalogRows = () => [...document.querySelectorAll(CARD_SELECTOR)];
+// Our cards are copies of the site's, so they look like its own whatever it changes. The template
+// is a clean copy of the first card seen, and each film's card is kept once made, so a filter
+// change moves cards rather than rebuilding them and their artwork isn't fetched again.
+let cardTemplate = null;
+const copies = new Map(); // film id -> card
+
+function stripOurs(root) {
+  root.querySelectorAll(".ebert-badge").forEach((n) => n.remove());
+  for (const node of [root, ...root.querySelectorAll("*")]) {
+    node.classList.remove("ebert-anchor", "ebert-hidden");
+    for (const { name } of [...node.attributes]) if (name.startsWith("data-ebert")) node.removeAttribute(name);
+  }
+}
+
+function captureTemplate(grid) {
+  if (cardTemplate) return;
+  const item = [...grid.children].find((child) => child.querySelector(SEL.card) && child.querySelector(SEL.cardLink));
+  if (!item) return;
+  const copy = item.cloneNode(true);
+  stripOurs(copy);
+  copy.querySelectorAll(SEL.cardInert).forEach((n) => n.remove());
+  // The site lazy-loads through a script that only knows its own images; ours use the browser's.
+  const img = copy.querySelector("img");
+  if (img) {
+    for (const name of ["src", "srcset", "data-src", "data-srcset", "data-sizes"]) img.removeAttribute(name);
+    img.className = [...img.classList].filter((c) => !/^(lazy|ls-)/.test(c)).join(" ");
+    img.loading = "lazy";
+    img.decoding = "async";
+  }
+  cardTemplate = copy;
+}
+
+function cardFor(film) {
+  let item = copies.get(film.id);
+  if (item) return item;
+  item = cardTemplate.cloneNode(true);
+  const titleId = `ebert-title-${film.id}`;
+  const link = item.querySelector(SEL.cardLink);
+  if (link) {
+    link.href = filmHref(film);
+    link.setAttribute("aria-labelledby", titleId);
+  }
+  const title = item.querySelector(SEL.cardTitle);
+  if (title) {
+    title.textContent = film.title;
+    title.id = titleId;
+  }
+  const year = item.querySelector(SEL.cardYear);
+  if (year) year.textContent = film.year ?? "";
+  const runtime = item.querySelector(SEL.cardRuntime);
+  if (runtime) runtime.textContent = formatRuntime(film.runtime);
+  const img = item.querySelector("img");
+  if (img) {
+    img.alt = film.title;
+    img.srcset = POSTER_WIDTHS.map((w) => `${posterUrl(film.id, w)} ${w}w`).join(", ");
+    img.src = posterUrl(film.id, 640);
+  }
+  copies.set(film.id, item);
+  return item;
+}
+
+// Our results, drawn in place of the site's grid while a filter is on. Built once and moved in and
+// out of the page as filters and pages change.
+let results = null;
+let catalogFor = null; // the query string the list below is for
+let catalogFilms = null; // that list, once loaded
+let shown = RESULTS_PAGE;
+
+function resultsParts() {
+  if (results) return results;
+  const status = el("div", "ebert-status");
+  const count = el("span", "ebert-status-count");
+  const clear = button("ebert-link", "Clear");
+  status.append(el("span", "ebert-status-label", "Letterboxd filters"), count, clear);
+  const empty = el("div", "ebert-empty");
+  const clearEmpty = button("ebert-link", "Clear filters");
+  empty.append(el("span", null, "No films match these filters."), clearEmpty);
+  const grid = el("ul", "ebert-grid");
+  const more = el("div", "ebert-more");
+  clear.addEventListener("click", clearFilters);
+  clearEmpty.addEventListener("click", clearFilters);
+  // The next batch is drawn as the end of this one comes near. The observer only reports changes,
+  // so after drawing, a sentinel still in reach asks again rather than waiting on a scroll.
+  const extend = () => {
+    if (more.hidden || !more.isConnected) return;
+    if (more.getBoundingClientRect().top > innerHeight + RESULTS_AHEAD_PX) return;
+    shown += RESULTS_PAGE;
+    applyFilters();
+    requestAnimationFrame(extend);
+  };
+  new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && extend(), {
+    rootMargin: `${RESULTS_AHEAD_PX}px`,
+  }).observe(more);
+  results = { status, count, empty, grid, more, parts: [status, empty, grid, more] };
+  return results;
+}
+
+function removeResults() {
+  if (results?.status.isConnected) results.parts.forEach((n) => n.remove());
+}
+
+function applyFilters() {
+  const siteGrid = onAllFilms() && document.querySelector(SEL.allFilmsGrid);
+  if (!siteGrid) return removeResults();
+  captureTemplate(siteGrid);
+  const active = filtering();
+  siteGrid.classList.toggle("ebert-hidden", active);
+  document.querySelector(SEL.allFilmsLoader)?.classList.toggle("ebert-hidden", active);
+  if (!active) return removeResults();
+
+  const r = resultsParts();
+  // Styled as the site's grid, whatever its classes are now.
+  r.grid.className = [...siteGrid.classList].filter((c) => !c.startsWith("ebert-")).concat("ebert-grid").join(" ");
+  if (siteGrid.nextElementSibling !== r.status) {
+    siteGrid.after(...r.parts);
+    // The grid insets its cards with its own padding; the lines above it line up with the cards.
+    const { paddingLeft, paddingRight } = getComputedStyle(r.grid);
+    for (const line of [r.status, r.empty]) {
+      line.style.marginLeft = paddingLeft;
+      line.style.marginRight = paddingRight;
+    }
+  }
+
+  const search = location.search;
+  if (catalogFor !== search) {
+    catalogFor = search;
+    catalogFilms = null;
+    shown = RESULTS_PAGE;
+    loadCatalog(search).then(
+      (films) => {
+        if (catalogFor !== search) return;
+        catalogFilms = films;
+        applyFilters();
+      },
+      (err) => {
+        if (catalogFor !== search) return;
+        console.warn("[ebert] All Films list", err);
+        catalogFor = null; // try again on the next change
+        r.count.textContent = "Couldn't load the list of films";
+      }
+    );
+  }
+  if (!catalogFilms) {
+    if (catalogFor === search) r.count.textContent = "Loading…";
+    r.empty.hidden = true;
+    r.more.hidden = true;
+    r.grid.replaceChildren();
+    return;
+  }
+
+  const matched = catalogFilms.filter((film) => matchesFilters(filmFacts(film), filters));
+  r.count.textContent = `${formatCount(matched.length)} of ${formatCount(catalogFilms.length)} films`;
+  r.empty.hidden = matched.length > 0;
+  r.more.hidden = matched.length <= shown;
+  // The template comes from the site's grid, which shows this same query; if that's still
+  // loading, the next mutation brings both.
+  const cards = cardTemplate ? matched.slice(0, shown).map(cardFor) : [];
+  const current = r.grid.children;
+  if (cards.length !== current.length || cards.some((card, i) => card !== current[i])) r.grid.replaceChildren(...cards);
+}
+
+function commitFilters(patch) {
+  filters = normalizeFilters({ ...filters, ...patch });
+  shown = RESULTS_PAGE;
+  applyFilters();
+  cacheSet(FILTERS_KEY, filters, FILTERS_TTL).catch(() => {});
+}
+
+function clearFilters() {
+  commitFilters(DEFAULT_FILTERS);
+  panel?.sync();
+}
+
+// Run on every DOM change: the page is rendered client-side, so the panel and grid can appear, be
+// replaced, or be navigated away from at any time. Cheap when nothing has moved.
+function syncAllFilms() {
+  if (!onAllFilms()) return removeResults();
+  ensurePanel();
+  const siteGrid = document.querySelector(SEL.allFilmsGrid);
+  if (!siteGrid) return;
+  if (!cardTemplate) captureTemplate(siteGrid);
+  const active = filtering();
+  const loader = document.querySelector(SEL.allFilmsLoader);
+  const settled =
+    siteGrid.classList.contains("ebert-hidden") === active &&
+    (!loader || loader.classList.contains("ebert-hidden") === active) &&
+    (!active || (siteGrid.nextElementSibling === results?.status && catalogFor === location.search));
+  if (!settled) applyFilters();
+}
+
+// ---------- The panel ----------
+// A copy of one of the site's own accordions, so it reads as one more group beside Genres and
+// Decades. The site's accordions are React's; ours is a plain copy with its own handler, toggling
+// the same classes the site does (STATE_CLASSES in lib/site.js).
+let panel = null; // { root, sync }
+
+function ensurePanel() {
+  const label = document.querySelector(SEL.filterSectionLabel);
+  if (!label) return;
+  if (!panel) {
+    // A closed accordion doesn't render its body at all, so the copy is of one that's open —
+    // a filter group if one is, otherwise Sort, which starts open. Its state is reset below.
+    const hasBody = (a) => a.querySelector('[role="region"]')?.querySelector(SEL.accordionContent);
+    const models = [...label.parentElement.querySelectorAll(SEL.accordion)].filter(hasBody);
+    const model = models.find((a) => label.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) || models[0];
+    if (!model) return;
+    panel = buildPanel(model);
+    if (!panel) return;
+  }
+  // First among the filters, ahead of the site's own groups.
+  if (label.nextElementSibling !== panel.root) {
+    label.after(panel.root);
+    panel.sync();
+  }
+}
 
 function button(className, text) {
   const node = el("button", className, text);
@@ -430,46 +710,50 @@ function button(className, text) {
   return node;
 }
 
-// One option in the panel, borrowing the site's own markup: it hides the checkbox and draws the
-// dot as the label's ::before, so these look like the Genres and Decades beside them. The class
-// is ours (`ebert-option`) rather than the site's `filter-group-option`, which its own JS reads.
-let optionId = 0;
-
-function panelOption(label, checked, onToggle) {
-  const item = el("li", "ebert-option");
-  const box = document.createElement("input");
-  box.type = "checkbox";
-  box.id = `ebert-option-${++optionId}`;
-  box.checked = checked;
-  box.addEventListener("change", () => onToggle(box.checked));
-  const text = el("label", "criterion-channel__filter-label", label);
-  text.htmlFor = box.id;
-  item.append(box, text);
-  return { item, box };
+// One of the site's filter options (a pill), or a plain button if there's none to copy. A closed
+// filter group doesn't render its options, so a Sort option stands in, turned into a filter one.
+function optionButton(label) {
+  const model = document.querySelector(SEL.filterOption) || document.querySelector(SEL.sortOption);
+  if (!model) return button("ebert-option", label);
+  const node = model.cloneNode(true);
+  node.removeAttribute("id");
+  node.type = "button";
+  const asFilter = stateClass(node, "sortOptionAsFilter");
+  if (asFilter) {
+    node.classList.remove([...node.classList].find((c) => c.endsWith("__kindSort")));
+    node.classList.add(asFilter);
+  }
+  const active = stateClass(node, "filterOptionActive");
+  if (active) node.classList.remove(active);
+  // Just the label: a sort option also carries its direction arrow.
+  const text = node.querySelector(SEL.filterOptionLabel);
+  if (text) {
+    text.textContent = label;
+    node.replaceChildren(text);
+  } else node.textContent = label;
+  node.classList.add("ebert-option");
+  return node;
 }
 
-// A list of options where at most one is on, so clicking the checked one turns it off. `value`
-// is null for "no filter", which is what the site's Reset and our Clear return them to.
+// Options where at most one is on, so clicking the chosen one turns it off (value null).
 function panelChoices(options, valueFor, onChange) {
-  const list = el("ul", "ebert-options");
-  const boxes = options.map(({ value, label }) => {
-    const { item, box } = panelOption(label, valueFor() === value, (on) => onChange(on ? value : null));
-    list.append(item);
-    return { value, box };
+  const list = el("div", "ebert-options");
+  const buttons = options.map(({ value, label }) => {
+    const node = optionButton(label);
+    node.addEventListener("click", () => onChange(valueFor() === value ? null : value));
+    list.append(node);
+    return { value, node };
   });
   const sync = () => {
-    for (const { value, box } of boxes) box.checked = valueFor() === value;
+    for (const { value, node } of buttons) {
+      const on = valueFor() === value;
+      node.setAttribute("aria-pressed", on);
+      const active = stateClass(node, "filterOptionActive");
+      if (active) node.classList.toggle(active, on);
+      node.classList.toggle("ebert-option--on", on);
+    }
   };
   return { list, sync };
-}
-
-function panelGroup(title) {
-  const group = el("div", "filter-group ebert-filter-group");
-  const head = el("div", "filter-group-head");
-  head.append(el("h3", "criterion-channel__filter-group-label", title));
-  const body = el("div", "ebert-filter-body");
-  group.append(head, body);
-  return { group, body };
 }
 
 function panelSection(title) {
@@ -542,20 +826,53 @@ function rangeSlider(read, commit) {
   return { row, sync };
 }
 
-function setupFilters() {
-  const table = document.querySelector(".criterion-channel__gridview");
-  const host = table?.closest(".max-width-container");
-  const panel = document.querySelector("[data-store-filters] .filter-options-container");
-  if (!host || !panel) return;
-  filters = normalizeFilters(cachePeek(FILTERS_KEY)?.v);
+function buildPanel(model) {
+  const root = model.cloneNode(true);
+  const head = root.querySelector(SEL.accordionButton);
+  const title = root.querySelector(SEL.accordionTitle);
+  const icon = root.querySelector(SEL.accordionIcon);
+  const region = root.querySelector('[role="region"]');
+  const content = root.querySelector(SEL.accordionContent);
+  if (!head || !title || !region || !content) return null;
+  for (const node of [root, ...root.querySelectorAll("[id]")]) node.removeAttribute("id");
+  root.classList.add("ebert-accordion");
+  head.id = "ebert-accordion-head";
+  region.id = "ebert-accordion-body";
+  head.setAttribute("aria-controls", region.id);
+  head.setAttribute("aria-label", "Letterboxd");
+  region.setAttribute("aria-labelledby", head.id);
+  title.textContent = "Letterboxd";
+  // Just the open/closed icon: anything else beside it (a count of chosen options) is the site's.
+  // The site draws a different icon for each state (minus, plus) rather than restyling one, so
+  // ours swaps between copies of both; the model is open, so the closed one comes from elsewhere.
+  const right = root.querySelector(SEL.accordionRight);
+  const closedModel = [...document.querySelectorAll(SEL.accordionButton)].find(
+    (b) => b.getAttribute("aria-expanded") === "false"
+  );
+  const closedIcon = closedModel?.querySelector(SEL.accordionIcon)?.cloneNode(true);
+  if (right && icon) right.replaceChildren(icon);
 
-  const commit = (patch) => {
-    filters = normalizeFilters({ ...filters, ...patch });
-    applyFilters();
-    cacheSet(FILTERS_KEY, filters, FILTERS_TTL).catch(() => {});
+  let open = true;
+  const setOpen = (value) => {
+    open = value;
+    head.setAttribute("aria-expanded", open);
+    const titleOpen = stateClass(title, "accordionTitleOpen");
+    if (titleOpen) title.classList.toggle(titleOpen, open);
+    if (icon && closedIcon) {
+      right.replaceChildren(open ? icon : closedIcon);
+    } else {
+      const iconOpen = icon && stateClass(icon, "accordionIconOpen");
+      if (iconOpen) icon.classList.toggle(iconOpen, open);
+    }
+    // The site animates its own regions with inline height and opacity.
+    region.style.height = open ? "auto" : "0px";
+    region.style.opacity = open ? "1" : "0";
+    region.style.overflow = open ? "" : "hidden";
+    region.inert = !open;
   };
+  head.addEventListener("click", () => setOpen(!open));
 
-  const { group, body } = panelGroup("Letterboxd");
+  const body = el("div", "ebert-filter-body");
 
   // Rating, as a slider: the useful range is narrow (most of the catalog sits between 3 and 4),
   // so tenths are what separate "good" from "great" here, and a list of bands would be too coarse.
@@ -577,196 +894,104 @@ function setupFilters() {
     );
   };
   slider.addEventListener("input", () => {
-    commit({ minRating: +slider.value });
+    commitFilters({ minRating: +slider.value });
     syncSlider();
   });
   const rating = panelSection("Rating");
   const ratingRow = el("div", "ebert-slider-row");
   ratingRow.append(slider, sliderValue);
   rating.append(ratingRow);
-  body.append(rating);
 
-  // Runtime needs a snapshot built since runtimes were added; until then there's nothing to ask.
-  const hasRuntime = catalogRows().some((row) => rowFilm(row).runtime);
-  const runtime = hasRuntime ? rangeSlider(() => filters, commit) : null;
-  if (runtime) {
-    const section = panelSection("Runtime");
-    section.append(runtime.row);
-    body.append(section);
-  }
+  const runtime = rangeSlider(() => filters, commitFilters);
+  const runtimeSection = panelSection("Runtime");
+  runtimeSection.append(runtime.row);
 
-  // "Everything" is the absence of this filter, so it isn't offered as an option to tick.
+  // "Everything" is the absence of this filter, so it isn't offered as an option to pick.
   const seen = panelChoices(
     SEEN_OPTIONS.filter((o) => o.value !== "all"),
     () => filters.seen,
-    (value) => commit({ seen: value || "all" })
+    (value) => commitFilters({ seen: value || "all" })
   );
   const seenSection = panelSection("Watched");
   const seenHint = el("p", "ebert-hint", "Add your Letterboxd username in the Ebert popup.");
   seenSection.append(seen.list, seenHint);
-  body.append(seenSection);
 
-  // First in the panel, ahead of the site's own groups: these are the filters the panel can't
-  // otherwise offer, and the reason to open it at all.
-  panel.prepend(group);
-  addPanelMenuItem(group);
+  body.append(rating, runtimeSection, seenSection);
+  content.replaceChildren(body);
+  setOpen(true);
 
-  // The panel is a modal over the table, so the result of a filter is only visible once it's
-  // closed. This line stands in for that: it appears only while a filter is on, and carries the
-  // count and the way out, so a filter kept from an earlier visit can't silently empty the page.
-  const status = el("div", "ebert-status");
-  const count = el("span", "ebert-status-count");
-  const clear = button("ebert-link", "Clear");
-  status.append(el("span", "ebert-status-label", "Letterboxd filters"), count, clear);
-
-  const empty = el("div", "ebert-empty");
-  const clearEmpty = button("ebert-link", "Clear filters");
-  empty.append(el("span", null, "No films match these filters."), clearEmpty);
-  empty.hidden = true;
-
-  const clearAll = () => {
-    commit(DEFAULT_FILTERS);
-    syncControls();
-  };
-  clear.addEventListener("click", clearAll);
-  clearEmpty.addEventListener("click", clearAll);
-  // The site's own Reset clears its checkboxes; ours are in the same panel, so it clears them too.
-  document.querySelector("[data-store-filters] [data-is-reset-button]")?.addEventListener("click", clearAll);
-
-  host.prepend(status, empty);
-
-  const syncControls = () => {
+  const sync = () => {
     // Nothing to compare against until a username is set in the popup; a "watched" filter left
-    // over from before it was cleared would hide rows with no visible way to bring them back.
+    // over from before it was cleared would hide films with no visible way to bring them back.
     const named = !!cachePeek(USERNAME_KEY)?.v;
-    if (!named && filters.seen !== "all") commit({ seen: "all" });
+    if (!named && filters.seen !== "all") commitFilters({ seen: "all" });
     seenSection.classList.toggle("ebert-section--off", !named);
     seenHint.hidden = named;
     syncSlider();
-    runtime?.sync();
+    runtime.sync();
     seen.sync();
   };
-
-  applyFilters = () => {
-    const rows = catalogRows();
-    let shown = 0;
-    for (const row of rows) {
-      const pass = matchesFilters(rowFilm(row), filters);
-      row.classList.toggle("ebert-hidden", !pass);
-      if (pass) shown++;
-    }
-    count.textContent = `${formatCount(shown)} of ${formatCount(rows.length)} films`;
-    status.hidden = isDefaultFilters(filters);
-    empty.hidden = shown > 0 || !rows.length || isDefaultFilters(filters);
-  };
-
-  syncFilterControls = syncControls;
-  syncControls();
-  applyFilters();
-}
-
-// The panel's left-hand nav. The site binds its own items at init, so this one scrolls the group
-// into view itself — and without touching location.hash, which carries the Letterboxd sort.
-function addPanelMenuItem(group) {
-  const titles = document.querySelector("[data-store-filters] .filter-titles");
-  if (!titles) return;
-  const item = el("li", "filter-title criterion-channel__filter-title ebert-filter-title");
-  const link = el("a", null, "Letterboxd");
-  link.href = "#";
-  link.addEventListener("click", (e) => {
-    e.preventDefault();
-    group.scrollIntoView({ block: "start", behavior: "smooth" });
-  });
-  item.append(link);
-  titles.prepend(item); // matches the group's place in the panel beside it
-}
-
-// films.criterionchannel.com sorts on the server (?sort=, which answers 500 to values it doesn't
-// know), so sorting by Letterboxd rating reorders the rows in place and is kept in the hash:
-// #letterboxd (best first) or #letterboxd-asc.
-function ratingSortDir() {
-  const m = location.hash.match(/^#letterboxd(-asc)?$/);
-  return m ? (m[1] ? "asc" : "desc") : null;
-}
-
-function setupRatingSort() {
-  const select = document.querySelector("select[data-store-sorting]");
-  const tbody = document.querySelector(".criterion-channel__tbody");
-  if (!select || !tbody) return;
-  const direction = document.querySelector("button[data-store-direction]");
-  select.add(new Option("Letterboxd Rating", "letterboxd"));
-
-  const apply = (dir) => {
-    history.replaceState(null, "", `${location.pathname}${location.search}#letterboxd${dir === "asc" ? "-asc" : ""}`);
-    select.value = "letterboxd";
-    // The site's button holds the direction its next click switches to.
-    direction?.setAttribute("data-store-direction", dir === "asc" ? "desc" : "asc");
-    const ratingOf = (row) => {
-      const meta = catalogRowMeta(row);
-      return meta && cachedFilm(lbKey(meta))?.v?.rating;
-    };
-    tbody.append(...sortByRating([...tbody.querySelectorAll(CARD_SELECTOR)], ratingOf, dir));
-  };
-
-  // Capture phase, ahead of the site's own handlers, which navigate to a new ?sort= or ?direction=.
-  document.addEventListener(
-    "change",
-    (e) => {
-      if (e.target !== select) return;
-      if (select.value === "letterboxd") {
-        e.stopImmediatePropagation();
-        apply("desc");
-      } else if (ratingSortDir()) {
-        // The site builds its URL by appending to location.href; a hash would swallow the query.
-        history.replaceState(null, "", location.pathname + location.search);
-      }
-    },
-    true
-  );
-  direction?.addEventListener(
-    "click",
-    (e) => {
-      const dir = ratingSortDir();
-      if (!dir) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      apply(dir === "asc" ? "desc" : "asc");
-    },
-    true
-  );
-  const dir = ratingSortDir();
-  if (dir) apply(dir);
+  return { root, sync };
 }
 
 // This script runs at document_start, so the cache read above is already in flight while the page
 // is still parsing. Painting needs both it and the DOM: the mirror so the first scan can badge every
-// known card at once, and the markup the cards live in. Cards added later are caught by the observer.
+// known card at once, and the markup the cards live in, once React has hydrated it (below). Cards
+// added later are caught by the observer.
 const domReady =
   document.readyState === "loading"
     ? new Promise((resolve) => document.addEventListener("DOMContentLoaded", resolve, { once: true }))
     : Promise.resolve();
 
-const painting = Promise.all([
-  cacheReady.catch((err) => console.warn("[ebert] cache load failed", err)),
-  domReady,
-]).then(() => {
-  start();
-  handleDetailPage();
-});
+// The page is server-rendered and then hydrated by React, which expects the DOM to be exactly what
+// the server sent: a badge added before then is a hydration mismatch (React error #418), and React
+// throws that markup away and renders it again. So nothing is drawn until the site shows it has
+// hydrated, with a timeout in case that signal ever goes away.
+const HYDRATION_TIMEOUT_MS = 5000;
+const hydrated = domReady.then(
+  () =>
+    new Promise((resolve) => {
+      if (document.querySelector(SEL.hydrated)) return resolve();
+      const watch = new MutationObserver(() => {
+        if (document.querySelector(SEL.hydrated)) finish();
+      });
+      const timer = setTimeout(finish, HYDRATION_TIMEOUT_MS);
+      function finish() {
+        watch.disconnect();
+        clearTimeout(timer);
+        resolve();
+      }
+      watch.observe(document.body, { childList: true });
+    })
+);
 
-// The catalog's sort menu and Advanced Filters panel are built by the site's own scripts, and both
-// bind their handlers at init; ours have to go in after that, so they wait for load rather than
-// DOMContentLoaded. Badges don't — they're already going up by then.
-if (ON_CATALOG) {
-  const loaded =
-    document.readyState === "complete"
-      ? Promise.resolve()
-      : new Promise((resolve) => window.addEventListener("load", resolve, { once: true }));
-  Promise.all([painting, loaded]).then(() => {
-    setupFilters();
-    setupRatingSort();
+// TEMPORARY: timing instrumentation, to be removed.
+const T = (label) => console.log(`[ebert-timing] ${label} @ ${Math.round(performance.now())}ms`);
+T("script-start");
+cacheReady.then(() => T("cacheReady"));
+cacheFull.then(() => T("cacheFull"));
+domReady.then(() => T("domReady"));
+hydrated.then(() => T("hydrated"));
+{
+  const seen = new MutationObserver(() => {
+    if (!document.querySelector(".ebert-badge")) return;
+    T("first-badge");
+    seen.disconnect();
+  });
+  document.addEventListener("DOMContentLoaded", () => seen.observe(document.body, { childList: true, subtree: true }), {
+    once: true,
+  });
+  window.addEventListener("load", () => {
+    T(`load (badges=${document.querySelectorAll(".ebert-badge").length})`);
+    setTimeout(() => T(`+1s (badges=${document.querySelectorAll(".ebert-badge").length})`), 1000);
   });
 }
+
+Promise.all([cacheReady.catch((err) => console.warn("[ebert] cache load failed", err)), hydrated]).then(() => {
+  T("start-scan");
+  start();
+  T("end-scan");
+});
 
 // Pick up films logged or watchlisted since the last visit; marks repaint when the sync lands.
 chrome.runtime.sendMessage({ type: "syncUser", maxAge: USER_REFRESH_MS }).catch(() => {});

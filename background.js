@@ -60,12 +60,14 @@ function refresh(key, film) {
 }
 
 // Misses cached by an older matcher may resolve now, so drop them whenever the extension updates,
-// along with state from the old per-install crawler.
+// along with state the current version no longer reads: the old per-install crawler's, Criterion
+// metadata keyed by the old site's page paths (cc4:, now cc5: by media id).
+const RETIRED_KEYS = new Set(["catalog", "crawl:backoff"]);
 chrome.runtime.onInstalled.addListener(async () => {
   const all = await chrome.storage.local.get(null);
   await chrome.storage.local.remove(
     Object.keys(all).filter(
-      (k) => (k.startsWith("lb:") && all[k]?.v == null) || k === "catalog" || k === "crawl:backoff"
+      (k) => (k.startsWith("lb:") && all[k]?.v == null) || k.startsWith("cc4:") || RETIRED_KEYS.has(k)
     )
   );
 });

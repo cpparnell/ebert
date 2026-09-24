@@ -2,17 +2,18 @@
 // Resolves the whole Criterion catalog on Letterboxd and writes the shared snapshot the extension
 // reads (see lib/snapshot.js). Run nightly by .github/workflows/snapshot.yml; also runnable locally:
 //   node scripts/build-snapshot.js [out=dist/snapshot.json]
-// LIMIT=50 caps the run; ONLY=la-piscine,xiao-wu resolves just those slugs (debugging one film).
+// LIMIT=50 caps the run; ONLY=la-piscine,xiao-wu resolves just those films (debugging one film).
 const fs = require("fs");
 const path = require("path");
-const { parseFilmPage, isMatch, resolveFilm, titleVariants } = require("../lib/letterboxd.js");
-const { parseCatalog, CATALOG_URL } = require("../lib/criterion.js");
+const { parseFilmPage, isMatch, resolveFilm, titleVariants, slugify, lbKey } = require("../lib/letterboxd.js");
+const { allFilmsUrl, mediaUrl, parseAllFilms, parseMedia } = require("../lib/site.js");
 const { SNAPSHOT_URL } = require("../lib/snapshot.js");
 const { resolveViaWikidata } = require("./wikidata.js");
 
 const OUT = process.argv[2] || "dist/snapshot.json";
 const LIMIT = +process.env.LIMIT || Infinity;
 // Debugging one film's matching without waiting out the catalog: ONLY=la-piscine,les-creatures.
+// Each entry is a title as a slug, or a Criterion media id (the L5Z3RaiC in /films/L5Z3RaiC/…).
 const ONLY = process.env.ONLY ? new Set(process.env.ONLY.split(",").map((s) => s.trim())) : null;
 const CONCURRENCY = 1; // one request at a time (~2/s, ~30 min a run): nothing needs it faster
 const MAX_ERROR_RATE = 0.1; // above this, assume we're being blocked and publish nothing
@@ -39,6 +40,7 @@ function politeFetcher(name) {
 
 const politeFetch = politeFetcher("letterboxd");
 const wikidataFetch = politeFetcher("wikidata");
+const criterionFetch = politeFetcher("criterion");
 
 // Installments ("Carlos: Part 2") always record `series`: whether the rating is the whole work's.
 const trim = (film, installment) =>
@@ -92,52 +94,82 @@ async function resolve(film, previous) {
   return trim(found, installment);
 }
 
+// Last night's films by Criterion id, and by lbKey for entries from before the site's redesign,
+// which keyed them by page slug. Either way a film already resolved keeps its Letterboxd URL.
 async function loadPrevious() {
+  let films = {};
   try {
     const res = await fetch(SNAPSHOT_URL, { headers: HEADERS });
-    return res.ok ? (await res.json()).films || {} : {};
-  } catch {
-    return {};
+    if (res.ok) films = (await res.json()).films || {};
+  } catch {}
+  const byKey = new Map(Object.values(films).map((film) => [lbKey(film), film]));
+  return { size: Object.keys(films).length, get: (film) => films[film.id] || byKey.get(lbKey(film)) };
+}
+
+// Every film on the All Films page, from the JSON API behind it: id, title and year.
+async function loadCatalog() {
+  const films = new Map();
+  for (let key = "1", pages = 0; key; pages++) {
+    if (pages > 100) throw new Error("catalog paging never ended");
+    const res = await criterionFetch(allFilmsUrl(key));
+    if (!res.ok) throw new Error(`catalog responded ${res.status}`);
+    const page = parseAllFilms(await res.json());
+    for (const film of page.films) films.set(film.id, film);
+    key = page.next;
   }
+  return [...films.values()].sort((a, b) => a.title.localeCompare(b.title));
+}
+
+// The catalog lists no directors, which matching leans on, so they come from each film's own record.
+// That's one request a film, but only for films new to the snapshot: the rest keep last night's.
+// The catalog's title is kept (the API's can be bare, e.g. an episode's "Episode 1"); its year too,
+// unless it's unusable, when the film's own record usually has the right one.
+async function withDirectors(film, id, previous) {
+  // (Entries from the old site sometimes list a director twice.)
+  if (previous?.directors && film.year && previous.year === film.year) return { ...film, directors: [...new Set(previous.directors)] };
+  const res = await criterionFetch(mediaUrl(id));
+  if (!res.ok) throw new Error(`Criterion responded ${res.status} for ${id}`);
+  const meta = parseMedia(await res.json());
+  return { ...film, year: film.year ?? meta?.year ?? null, directors: meta?.directors || [] };
 }
 
 async function main() {
-  const res = await fetch(CATALOG_URL, { headers: HEADERS });
-  if (!res.ok) throw new Error(`catalog responded ${res.status}`);
-  const catalog = parseCatalog(await res.text());
-  const all = Object.keys(catalog).sort();
-  if (all.length < 500) throw new Error(`catalog parsed to only ${all.length} films; layout changed?`);
-  const slugs = (ONLY ? all.filter((s) => ONLY.has(s)) : all).slice(0, LIMIT);
+  const all = await loadCatalog();
+  if (all.length < 500) throw new Error(`catalog parsed to only ${all.length} films; API changed?`);
+  const wanted = ONLY ? all.filter((f) => ONLY.has(f.id) || ONLY.has(slugify(f.title))) : all;
+  const catalog = wanted.slice(0, LIMIT);
   const previous = await loadPrevious();
-  console.log(`${slugs.length} films in catalog, ${Object.keys(previous).length} in previous snapshot`);
+  console.log(`${catalog.length} films in catalog, ${previous.size} in previous snapshot`);
 
   const films = {};
   let done = 0;
   let errors = 0;
   let next = 0;
   const worker = async () => {
-    while (next < slugs.length) {
-      const slug = slugs[next++];
-      const film = catalog[slug];
+    while (next < catalog.length) {
+      const { id, title, year } = catalog[next++];
+      const listed = { title, year };
+      const before = previous.get({ id, ...listed });
       try {
-        films[slug] = { ...film, lb: await resolve({ ...film, slug }, previous[slug]) };
+        const film = await withDirectors(listed, id, before);
+        films[id] = { ...film, lb: await resolve(film, before) };
       } catch (err) {
         errors++;
-        console.warn(`${slug}: ${err.message}`);
+        console.warn(`${id} (${listed.title}): ${err.message}`);
         // Keep last night's answer rather than dropping the film.
-        if (previous[slug]) films[slug] = { ...film, lb: previous[slug].lb };
+        if (before) films[id] = { ...listed, directors: before.directors || [], lb: before.lb };
       }
-      if (++done % 250 === 0) console.log(`${done}/${slugs.length} (${errors} errors)`);
+      if (++done % 250 === 0) console.log(`${done}/${catalog.length} (${errors} errors)`);
     }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
-  if (errors > slugs.length * MAX_ERROR_RATE) {
-    throw new Error(`${errors} of ${slugs.length} lookups failed; not publishing`);
+  if (errors > catalog.length * MAX_ERROR_RATE) {
+    throw new Error(`${errors} of ${catalog.length} lookups failed; not publishing`);
   }
   const matched = Object.values(films).filter((f) => f.lb).length;
   console.log(
-    `matched ${matched}/${slugs.length}, ${errors} errors ` +
+    `matched ${matched}/${catalog.length}, ${errors} errors ` +
       `(${wikidataHits} matched via wikidata, ${wikidataErrors} wikidata failures)`
   );
 

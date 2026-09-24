@@ -1,4 +1,4 @@
-/* Tokens mirror Criterion's own UI: Montserrat, the duration chip's
+/* Tokens mirror Criterion's own UI: Gotham (the family name next/font registers), the duration chip's
    translucent black pill, and the grey used for secondary text. */
 :root {
   --ebert-green: #00e054;
@@ -7,7 +7,7 @@
   --ebert-text: #fff;
   --ebert-text-secondary: rgb(190, 190, 187);
   --ebert-text-muted: rgba(190, 190, 187, 0.7);
-  --ebert-font: Montserrat, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --ebert-font: gotham, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
 }
 
 @keyframes ebert-in {
@@ -17,19 +17,20 @@
 
 .ebert-star {
   color: var(--ebert-green);
-  /* ★ isn't in Montserrat; pin the fallback so it renders the same everywhere. */
+  /* ★ isn't in Gotham; pin the fallback so it renders the same everywhere. */
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", sans-serif;
   font-weight: 400;
 }
 
 /* ---------- Browse cards ---------- */
 
-.browse-image-container {
+/* The card's artwork (SELECTORS.cardImage in lib/site.js), tagged by content.js so the badge has
+   something to sit against without this file naming any of the site's own classes. */
+.ebert-anchor {
   position: relative;
 }
 
-/* Top-left, mirroring the duration chip's inset in the bottom-right.
-   The top-right holds the year tab that's baked into Criterion's artwork. */
+/* Top-left of the artwork. */
 .ebert-badge {
   position: absolute;
   top: 10px;
@@ -144,39 +145,24 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* ---------- Catalog filters ---------- */
+/* ---------- All Films filters ---------- */
 
-/* Our group inside the site's Advanced Filters panel, which is light: #fff / #fafafa with
-   #252525 text. The panel puts a group off-canvas until it's the active one on narrow screens;
-   ours isn't in the site's group list, so it stays in flow at every width. */
-.ebert-filter-group {
-  position: static !important;
-  transform: none !important;
-  height: auto !important;
-  overflow: visible !important;
-}
-
-/* Padding needs to outrank `.filters .filter-group`, whose shorthand would otherwise zero it.
-   Ours is the first group in the panel, so it starts flush with the top the way Genres used to,
-   and carries below it the same 50px the site leaves between its own groups. */
-.filters .ebert-filter-group.filter-group {
-  padding-top: 0;
-  padding-bottom: 50px;
-}
-
+/* Our group in the All Films filter panel is a copy of the site's own accordion, so its heading and
+   option pills already look like the site's; this styles only what's ours inside it. The panel is
+   dark: #121212, with #d2d2d2 text and #0a0a0a pills. */
 .ebert-filter-body {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 24px;
+  padding: 4px 0 8px;
 }
 
-/* Subordinate to the group's own heading, which is the site's 12px uppercase label.
-   Specificity has to clear `.filters .filter-group h4`, which sets 20px. */
-.filters .ebert-filter-group h4.ebert-section-title {
+/* Subordinate to the accordion's heading: the site's "Filters" label, a size down. */
+.ebert-section-title {
   margin: 0 0 12px;
-  color: #767676;
-  font: 600 11px/1.2 var(--ebert-font);
-  letter-spacing: 0.6px;
+  color: rgba(255, 255, 255, 0.7);
+  font: 500 12px/1.2 gothamNarrow, var(--ebert-font);
+  letter-spacing: 1.2px;
   text-transform: uppercase;
 }
 
@@ -187,8 +173,8 @@
 
 .ebert-hint {
   margin: 10px 0 0;
-  color: #767676;
-  font: 400 12px/1.4 var(--ebert-font);
+  color: var(--ebert-text-muted);
+  font: 400 13px/1.4 var(--ebert-font);
 }
 
 .ebert-hint[hidden] {
@@ -196,67 +182,39 @@
 }
 
 .ebert-options {
-  list-style: none;
-  padding: 0;
-  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-/* Same shape as the panel's own options: the checkbox is taken out of the flow and the dot is
-   drawn as the label's ::before, so these sit level with Genres and Decades. */
-/* Has to outrank the site's list resets, `ul li { margin-bottom: 1.2em }` and especially
-   `ul li:last-child { margin: 0 }`, which would drop the last option's 5px indent and leave it
-   sitting left of the ones above it. Values match `.filters .filter-group-option`. */
-.filters .ebert-options li.ebert-option {
-  position: relative;
-  padding: 0 0 0 32px;
-  margin: 0 0 0.1em 5px;
-  cursor: pointer;
+/* The copied pills carry the site's own active style too; this makes the choice unmistakable
+   even if the site's active look is as quiet as its resting one. */
+.ebert-option--on {
+  box-shadow: inset 0 0 0 1px rgb(180, 132, 30);
 }
 
-.ebert-option input[type="checkbox"] {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
+/* Only if there was no site option to copy. */
+button.ebert-option:not([class*="-module"]) {
+  padding: 8px 18px;
   border: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-}
-
-.ebert-option label::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 5px;
-  display: block;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  box-shadow: 0 0 0 1px #cdcdcb;
-}
-
-.ebert-option input[type="checkbox"]:checked + label::before {
-  background: #252525;
-  border: 3px solid #fafafa;
-}
-
-.ebert-option:hover label::before,
-.ebert-option input[type="checkbox"]:focus-visible + label::before {
-  box-shadow: 0 0 0 1px #252525;
+  border-radius: 20px;
+  background: #0a0a0a;
+  color: #d2d2d2;
+  font: 400 15px/1.5 var(--ebert-font);
+  text-align: left;
+  cursor: pointer;
 }
 
 .ebert-slider-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
 }
 
 /* Rating (one knob) and runtime (two) are drawn by the same rules so they read as one control in
    two forms. That means replacing Chrome's native range rather than tinting it with accent-color:
    a two-handle range has to be hand-drawn anyway, and only a shared rail and knob keep the pair
-   from drifting as the native rendering changes under them. Sizes here are the native ones this
-   panel used to show — an 8px rail under a 16px knob. */
+   from drifting as the native rendering changes under them. */
 .ebert-slider,
 .ebert-range-input {
   -webkit-appearance: none;
@@ -268,16 +226,17 @@
 }
 
 .ebert-slider {
-  width: 180px;
+  flex: none;
+  width: 150px;
 }
 
 /* The filled part runs to the middle of the knob, which sits half its own width inside each end. */
 .ebert-slider::-webkit-slider-runnable-track {
-  height: 8px;
-  border-radius: 4px;
+  height: 6px;
+  border-radius: 3px;
   background:
-    linear-gradient(#252525, #252525) left / calc(8px + var(--ebert-fill, 0) * (100% - 16px)) 100% no-repeat,
-    #e3e3e3;
+    linear-gradient(#d2d2d2, #d2d2d2) left / calc(8px + var(--ebert-fill, 0) * (100% - 16px)) 100% no-repeat,
+    #2e2e2e;
 }
 
 .ebert-slider::-webkit-slider-thumb,
@@ -287,13 +246,13 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #252525;
+  background: #f7f7f7;
   cursor: pointer;
 }
 
-/* Centres the 16px knob on the 8px rail; the range inputs carry their own 16px transparent track. */
+/* Centres the 16px knob on the 6px rail; the range inputs carry their own 16px transparent track. */
 .ebert-slider::-webkit-slider-thumb {
-  margin-top: -4px;
+  margin-top: -5px;
 }
 
 .ebert-slider:focus,
@@ -303,25 +262,21 @@
 
 .ebert-slider:focus-visible::-webkit-slider-thumb,
 .ebert-range-input:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px rgba(37, 37, 37, 0.3);
+  box-shadow: 0 0 0 3px rgba(247, 247, 247, 0.35);
 }
 
 .ebert-slider-value {
   display: inline-flex;
   align-items: baseline;
   gap: 4px;
-  color: #252525;
-  font: 500 15px/1.2 var(--ebert-font);
+  color: #d2d2d2;
+  font: 400 14px/1.2 var(--ebert-font);
   font-variant-numeric: tabular-nums;
-}
-
-.ebert-slider-value .ebert-star {
-  color: #252525;
+  white-space: nowrap;
 }
 
 .ebert-any {
-  color: #767676;
-  font-weight: 400;
+  color: var(--ebert-text-muted);
 }
 
 /* Runtime's two-handle range: two inputs stacked on one rail, each contributing only its knob.
@@ -329,26 +284,27 @@
    reads as a single control while both keep native focus and arrow keys. */
 .ebert-range {
   position: relative;
-  width: 180px;
+  flex: none;
+  width: 150px;
   height: 16px;
 }
 
 .ebert-range::before {
   content: "";
   position: absolute;
-  top: 4px;
+  top: 5px;
   left: 0;
   right: 0;
-  height: 8px;
-  border-radius: 4px;
-  background: #e3e3e3;
+  height: 6px;
+  border-radius: 3px;
+  background: #2e2e2e;
 }
 
 .ebert-range-fill {
   position: absolute;
-  top: 4px;
-  height: 8px;
-  background: #252525;
+  top: 5px;
+  height: 6px;
+  background: #d2d2d2;
 }
 
 .ebert-range-input {
@@ -380,32 +336,24 @@
   pointer-events: auto;
 }
 
-/* ---------- Status line over the table ---------- */
+/* ---------- Results in place of the site's grid ---------- */
 
-/* The panel covers the table, so a filter's effect is only visible once it's closed. This shows
-   up only while a filter is on, and stays reachable however far down the catalog you are. */
+/* Shown only while a filter is on: what's filtering, how many films pass, and the way out, so a
+   filter kept from an earlier visit can't silently narrow the page. */
 .ebert-status {
-  position: sticky;
-  top: 0;
-  z-index: 20;
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  padding: 12px 5%;
-  background: #141414;
-  border-bottom: 2px solid #4a4a4a;
+  gap: 12px;
+  margin: 0 0 20px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid #2e2e2e;
   color: var(--ebert-text-secondary);
-  font: 400 13px/1.2 var(--ebert-font);
-}
-
-.ebert-status[hidden],
-.ebert-empty[hidden] {
-  display: none;
+  font: 400 14px/1.2 var(--ebert-font);
 }
 
 .ebert-status-label {
   color: var(--ebert-green);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .ebert-status-count {
@@ -419,7 +367,7 @@
   background: none;
   padding: 0;
   color: var(--ebert-text-muted);
-  font: 600 12px/1 var(--ebert-font);
+  font: 500 13px/1 var(--ebert-font);
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
@@ -433,14 +381,22 @@
 .ebert-empty {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  padding: 28px 5%;
-  background: #141414;
+  gap: 12px;
+  padding: 24px 0;
   color: var(--ebert-text-secondary);
-  font: 400 14px/1.4 var(--ebert-font);
+  font: 400 15px/1.4 var(--ebert-font);
 }
 
-/* Beats .criterion-channel__tr's own display:block. */
+.ebert-empty[hidden],
+.ebert-more[hidden] {
+  display: none;
+}
+
+.ebert-more {
+  height: 1px;
+}
+
+/* The site's grid and its loader, set aside while ours stands in. */
 .ebert-hidden {
   display: none !important;
 }

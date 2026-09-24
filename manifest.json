@@ -21,13 +21,13 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.criterionchannel.com/*",
-        "https://films.criterionchannel.com/*"
+        "https://www.criterionchannel.com/*"
       ],
       "js": [
         "lib/shared.js",
         "lib/letterboxd.js",
         "lib/criterion.js",
+        "lib/site.js",
         "lib/snapshot.js",
         "lib/user.js",
         "content.js"

@@ -47,6 +47,9 @@ const trim = (film, installment) =>
     rating: film.rating,
     ratingCount: film.ratingCount,
     ...(film.runtime && { runtime: film.runtime }),
+    // Taste features (lib/taste.js). Omitted when empty so the snapshot doesn't carry 3,300 `[]`.
+    ...(film.genres?.length && { genres: film.genres }),
+    ...(film.countries?.length && { countries: film.countries }),
     ...(installment && { series: !!film.series }),
   };
 

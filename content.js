@@ -118,19 +118,53 @@ function el(tag, className, text) {
   return node;
 }
 
-// Marks a rating that belongs to the whole series ("Carlos" for "Carlos: Part 2"): a stacked
-// icon that widens to spell out "Series Rating" on hover.
-function seriesTag() {
+function icon(paths) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 10 10");
   svg.setAttribute("aria-hidden", "true");
-  svg.innerHTML =
-    '<rect x="3" y="0.75" width="6.25" height="6.25" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>' +
-    '<rect x="0.75" y="3" width="6.25" height="6.25" rx="1" fill="currentColor"/>';
+  svg.innerHTML = paths;
+  return svg;
+}
+
+const EYE =
+  '<path d="M0.8 5C2 2.9 3.4 1.9 5 1.9S8 2.9 9.2 5C8 7.1 6.6 8.1 5 8.1S2 7.1 0.8 5Z" fill="none" stroke="currentColor" stroke-width="1.1"/>' +
+  '<circle cx="5" cy="5" r="1.5" fill="currentColor"/>';
+const CLOCK =
+  '<circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" stroke-width="1.1"/>' +
+  '<path d="M5 2.7V5l1.6 1.1" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>';
+
+// Marks a rating that belongs to the whole series ("Carlos" for "Carlos: Part 2"): a stacked
+// icon that widens to spell out "Series Rating" on hover.
+function seriesTag() {
   const tag = el("span", "ebert-series");
-  tag.append(svg, el("span", "ebert-series-label", "Series Rating"));
+  tag.append(
+    icon(
+      '<rect x="3" y="0.75" width="6.25" height="6.25" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>' +
+        '<rect x="0.75" y="3" width="6.25" height="6.25" rx="1" fill="currentColor"/>'
+    ),
+    el("span", "ebert-series-label", "Series Rating")
+  );
   return tag;
 }
+
+// The user's own history with this film (see lib/user.js), or null if no username is set.
+// Data synced for a previous username is ignored until the new one's sync lands.
+function markFor(film) {
+  const user = cachePeek(USER_KEY)?.v;
+  return user?.username === cachePeek(USERNAME_KEY)?.v ? userMark(film, user) : null;
+}
+
+// The user's own score sits beside the consensus, in the same notation, since the whole point is
+// reading one against the other. Half-stars are exact at one decimal place ("3.5", "4.0").
+function markTag(mark) {
+  const tag = el("span", mark.watched ? "ebert-mark ebert-mark--watched" : "ebert-mark ebert-mark--watchlist");
+  tag.append(icon(mark.watched ? EYE : CLOCK));
+  if (mark.rating) tag.append(el("span", "ebert-mark-rating", mark.rating.toFixed(1)));
+  return tag;
+}
+
+const markTitle = (mark) =>
+  mark.watched ? `You watched this${mark.rating ? ` · ${starText(mark.rating)}` : ""}` : "In your watchlist";
 
 // Replaces any existing badge, so a score painted from a stale cache entry gets updated in place.
 // Letterboxd withholds the average for films with few ratings; a dash tells that apart from a miss.
@@ -148,13 +182,20 @@ function renderBadge(container, film) {
     badge.classList.add("ebert-badge--series");
     badge.append(seriesTag());
   }
+  const mark = markFor(film);
+  if (mark) {
+    badge.append(markTag(mark));
+    badge.title += ` · ${markTitle(mark)}`;
+  }
   const existing = container.querySelector(".ebert-badge");
   if (existing) existing.replaceWith(badge);
   else container.appendChild(badge);
 }
 
+let detail = null; // { anchor, film }, kept so the line can be redrawn when the user's data syncs
+
 function renderDetail(anchor, film) {
-  if (document.querySelector(".ebert-detail")) return;
+  detail = { anchor, film };
   const link = el("a", "ebert-detail");
   link.href = film.url;
   link.target = "_blank";
@@ -170,7 +211,16 @@ function renderDetail(anchor, film) {
       el("span", "ebert-muted", `${formatCount(film.ratingCount)} ratings`)
     );
   }
-  anchor.after(link);
+  const mark = markFor(film);
+  if (mark) {
+    const you = el("span", `ebert-you ${mark.watched ? "ebert-you--watched" : "ebert-you--watchlist"}`);
+    you.append(icon(mark.watched ? EYE : CLOCK), el("span", null, mark.watched ? "Watched" : "In your watchlist"));
+    if (mark.rating) you.append(el("span", "ebert-you-rating", starText(mark.rating)));
+    link.append(you);
+  }
+  const existing = document.querySelector(".ebert-detail");
+  if (existing) existing.replaceWith(link);
+  else anchor.after(link);
 }
 
 async function handleDetailPage() {
@@ -178,8 +228,9 @@ async function handleDetailPage() {
   const h1 = document.querySelector("h1.video-title, h1.collection-title");
   const meta = h1 && extractCriterionMeta(document);
   if (!meta) return;
-  const film = await lookup(meta).catch((err) => console.warn("[ebert]", err));
+  const film = await lookup({ ...meta, slug: criterionSlug(location.href) }).catch((err) => console.warn("[ebert]", err));
   if (!film) return;
+  await cacheReady.catch(() => {}); // the user's marks come from the storage mirror
   const badges = h1.parentElement.querySelector("h5.badges-container");
   renderDetail(badges || h1, film);
 }
@@ -203,16 +254,43 @@ function repaint(key, film) {
   }
 }
 
+// Every badge already drawn, e.g. after the user's watched films sync.
+function repaintAll() {
+  for (const card of document.querySelectorAll("[data-ebert-key]")) {
+    const parts = cardParts(card);
+    const film = cachedFilm(card.dataset.ebertKey)?.v;
+    if (parts && film && parts.container.querySelector(".ebert-badge")) renderBadge(parts.container, film);
+  }
+  if (detail) renderDetail(detail.anchor, detail.film);
+}
+
 // A stale score is shown first and refreshed in the background, and a new snapshot can land
 // mid-visit (e.g. just after install); repaint the affected cards either way.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
+  let refilter = false;
   for (const [key, { newValue }] of Object.entries(changes)) {
-    if (key.startsWith("lb:")) repaint(key, newValue?.v);
+    if (key.startsWith("lb:")) {
+      repaint(key, newValue?.v);
+      refilter = true;
+    }
     if (key === SNAPSHOT_KEY) {
       for (const [k, film] of snapshotByKey(newValue?.v)) repaint(k, film);
+      refilter = true;
+    }
+    if (key === USER_KEY || key === USERNAME_KEY) {
+      repaintAll();
+      refilter = true;
+    }
+    // Another Criterion tab changed the filters.
+    if (key === FILTERS_KEY && JSON.stringify(newValue?.v) !== JSON.stringify(filters)) {
+      filters = normalizeFilters(newValue?.v);
+      syncFilterControls();
+      refilter = true;
     }
   }
+  // A rating or a mark arriving can move a row in or out of the current filter.
+  if (refilter && ON_CATALOG) applyFilters();
 });
 
 function settle(card, state) {
@@ -235,7 +313,7 @@ async function processCard(card) {
     card.dataset.ebertQuery = `${meta.title} | ${meta.year} | ${meta.directors.join(", ")}`;
     card.dataset.ebertKey = lbKey(meta);
     if (!wanted()) throw new Cancelled();
-    const film = await lookup(meta);
+    const film = await lookup({ ...meta, slug: criterionSlug(href) });
     if (!film) return settle(card, "no-letterboxd-match");
     renderBadge(container, film);
     settle(card, film.rating == null ? "no-rating" : "ok");
@@ -302,6 +380,302 @@ function start() {
   scanCards();
 }
 
+// ---------- Catalog filters ----------
+// The catalog ships every row in one page, so filtering is a class on rows, not a round trip.
+// The controls live inside the site's own Advanced Filters panel, as one more group beside
+// Genres/Decades/Countries/Directors, and ask only what Letterboxd knows and that panel can't:
+// rating, runtime, and the user's own history.
+//
+// Nothing here reaches the site's filter logic. StoreFilters captures its checkboxes once at
+// init (`.filter-group-option input[type=checkbox]`) and only those feed the query string its
+// Apply button navigates to, so ours are injected later and deliberately not given that class.
+// Apply still works: it reloads with the site's filters, and ours come back from storage.
+const FILTERS_KEY = "catalog:filters";
+const FILTERS_TTL = 3650 * DAY_MS;
+
+let filters = DEFAULT_FILTERS;
+// Both replaced by setupFilters. applyFilters runs again whenever ratings or the user's marks land.
+let applyFilters = () => {};
+let syncFilterControls = () => {};
+
+const rowFacts = new WeakMap();
+
+// A row's Letterboxd cache key, fixed for the life of the page unlike the rating behind it.
+function rowKey(row) {
+  if (!rowFacts.has(row)) {
+    const meta = catalogRowMeta(row);
+    rowFacts.set(row, meta ? lbKey(meta) : null);
+  }
+  return rowFacts.get(row);
+}
+
+// Everything the filters ask about. A row with no Letterboxd match keeps null values, so an
+// active rating or runtime filter hides it rather than showing an unknown.
+function rowFilm(row) {
+  const key = rowKey(row);
+  const lb = key ? cachedFilm(key)?.v : null;
+  return { rating: lb?.rating ?? null, runtime: lb?.runtime ?? null, mark: lb ? markFor(lb) : null };
+}
+
+const catalogRows = () => [...document.querySelectorAll(CARD_SELECTOR)];
+
+function button(className, text) {
+  const node = el("button", className, text);
+  node.type = "button";
+  return node;
+}
+
+// One option in the panel, borrowing the site's own markup: it hides the checkbox and draws the
+// dot as the label's ::before, so these look like the Genres and Decades beside them. The class
+// is ours (`ebert-option`) rather than the site's `filter-group-option`, which its own JS reads.
+let optionId = 0;
+
+function panelOption(label, checked, onToggle) {
+  const item = el("li", "ebert-option");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.id = `ebert-option-${++optionId}`;
+  box.checked = checked;
+  box.addEventListener("change", () => onToggle(box.checked));
+  const text = el("label", "criterion-channel__filter-label", label);
+  text.htmlFor = box.id;
+  item.append(box, text);
+  return { item, box };
+}
+
+// A list of options where at most one is on, so clicking the checked one turns it off. `value`
+// is null for "no filter", which is what the site's Reset and our Clear return them to.
+function panelChoices(options, valueFor, onChange) {
+  const list = el("ul", "ebert-options");
+  const boxes = options.map(({ value, label }) => {
+    const { item, box } = panelOption(label, valueFor() === value, (on) => onChange(on ? value : null));
+    list.append(item);
+    return { value, box };
+  });
+  const sync = () => {
+    for (const { value, box } of boxes) box.checked = valueFor() === value;
+  };
+  return { list, sync };
+}
+
+function panelGroup(title) {
+  const group = el("div", "filter-group ebert-filter-group");
+  const head = el("div", "filter-group-head");
+  head.append(el("h3", "criterion-channel__filter-group-label", title));
+  const body = el("div", "ebert-filter-body");
+  group.append(head, body);
+  return { group, body };
+}
+
+function panelSection(title) {
+  const section = el("div", "ebert-section");
+  section.append(el("h4", "ebert-section-title", title));
+  return section;
+}
+
+function setupFilters() {
+  const table = document.querySelector(".criterion-channel__gridview");
+  const host = table?.closest(".max-width-container");
+  const panel = document.querySelector("[data-store-filters] .filter-options-container");
+  if (!host || !panel) return;
+  filters = normalizeFilters(cachePeek(FILTERS_KEY)?.v);
+
+  const commit = (patch) => {
+    filters = normalizeFilters({ ...filters, ...patch });
+    applyFilters();
+    cacheSet(FILTERS_KEY, filters, FILTERS_TTL).catch(() => {});
+  };
+
+  const { group, body } = panelGroup("Letterboxd");
+
+  // Rating, as a slider: the useful range is narrow (most of the catalog sits between 3 and 4),
+  // so tenths are what separate "good" from "great" here, and a list of bands would be too coarse.
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.className = "ebert-slider";
+  slider.min = 0;
+  slider.max = MAX_MIN_RATING;
+  slider.step = 0.1;
+  slider.setAttribute("aria-label", "Minimum Letterboxd rating");
+  const sliderValue = el("span", "ebert-slider-value");
+  const syncSlider = () => {
+    slider.value = filters.minRating;
+    sliderValue.replaceChildren(
+      ...(filters.minRating
+        ? [el("span", "ebert-star", "★"), el("span", null, `${filters.minRating.toFixed(1)} and up`)]
+        : [el("span", "ebert-any", "Any rating")])
+    );
+  };
+  slider.addEventListener("input", () => {
+    commit({ minRating: +slider.value });
+    syncSlider();
+  });
+  const rating = panelSection("Rating");
+  const ratingRow = el("div", "ebert-slider-row");
+  ratingRow.append(slider, sliderValue);
+  rating.append(ratingRow);
+  body.append(rating);
+
+  // Runtime needs a snapshot built since runtimes were added; until then there's nothing to ask.
+  const hasRuntime = catalogRows().some((row) => rowFilm(row).runtime);
+  const runtime = hasRuntime ? panelChoices(RUNTIME_BANDS, () => filters.runtime, (v) => commit({ runtime: v })) : null;
+  if (runtime) {
+    const section = panelSection("Runtime");
+    section.append(runtime.list);
+    body.append(section);
+  }
+
+  // "Everything" is the absence of this filter, so it isn't offered as an option to tick.
+  const seen = panelChoices(
+    SEEN_OPTIONS.filter((o) => o.value !== "all"),
+    () => filters.seen,
+    (value) => commit({ seen: value || "all" })
+  );
+  const seenSection = panelSection("Watched");
+  const seenHint = el("p", "ebert-hint", "Add your Letterboxd username in the Ebert popup.");
+  seenSection.append(seen.list, seenHint);
+  body.append(seenSection);
+
+  panel.append(group);
+  addPanelMenuItem(group);
+
+  // The panel is a modal over the table, so the result of a filter is only visible once it's
+  // closed. This line stands in for that: it appears only while a filter is on, and carries the
+  // count and the way out, so a filter kept from an earlier visit can't silently empty the page.
+  const status = el("div", "ebert-status");
+  const count = el("span", "ebert-status-count");
+  const clear = button("ebert-link", "Clear");
+  status.append(el("span", "ebert-status-label", "Letterboxd filters"), count, clear);
+
+  const empty = el("div", "ebert-empty");
+  const clearEmpty = button("ebert-link", "Clear filters");
+  empty.append(el("span", null, "No films match these filters."), clearEmpty);
+  empty.hidden = true;
+
+  const clearAll = () => {
+    commit(DEFAULT_FILTERS);
+    syncControls();
+  };
+  clear.addEventListener("click", clearAll);
+  clearEmpty.addEventListener("click", clearAll);
+  // The site's own Reset clears its checkboxes; ours are in the same panel, so it clears them too.
+  document.querySelector("[data-store-filters] [data-is-reset-button]")?.addEventListener("click", clearAll);
+
+  host.prepend(status, empty);
+
+  const syncControls = () => {
+    // Nothing to compare against until a username is set in the popup; a "watched" filter left
+    // over from before it was cleared would hide rows with no visible way to bring them back.
+    const named = !!cachePeek(USERNAME_KEY)?.v;
+    if (!named && filters.seen !== "all") commit({ seen: "all" });
+    seenSection.classList.toggle("ebert-section--off", !named);
+    seenHint.hidden = named;
+    syncSlider();
+    runtime?.sync();
+    seen.sync();
+  };
+
+  applyFilters = () => {
+    const rows = catalogRows();
+    let shown = 0;
+    for (const row of rows) {
+      const pass = matchesFilters(rowFilm(row), filters);
+      row.classList.toggle("ebert-hidden", !pass);
+      if (pass) shown++;
+    }
+    count.textContent = `${formatCount(shown)} of ${formatCount(rows.length)} films`;
+    status.hidden = isDefaultFilters(filters);
+    empty.hidden = shown > 0 || !rows.length || isDefaultFilters(filters);
+  };
+
+  syncFilterControls = syncControls;
+  syncControls();
+  applyFilters();
+}
+
+// The panel's left-hand nav. The site binds its own items at init, so this one scrolls the group
+// into view itself — and without touching location.hash, which carries the Letterboxd sort.
+function addPanelMenuItem(group) {
+  const titles = document.querySelector("[data-store-filters] .filter-titles");
+  if (!titles) return;
+  const item = el("li", "filter-title criterion-channel__filter-title ebert-filter-title");
+  const link = el("a", null, "Letterboxd");
+  link.href = "#";
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    group.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
+  item.append(link);
+  titles.append(item);
+}
+
+// films.criterionchannel.com sorts on the server (?sort=, which answers 500 to values it doesn't
+// know), so sorting by Letterboxd rating reorders the rows in place and is kept in the hash:
+// #letterboxd (best first) or #letterboxd-asc.
+function ratingSortDir() {
+  const m = location.hash.match(/^#letterboxd(-asc)?$/);
+  return m ? (m[1] ? "asc" : "desc") : null;
+}
+
+function setupRatingSort() {
+  const select = document.querySelector("select[data-store-sorting]");
+  const tbody = document.querySelector(".criterion-channel__tbody");
+  if (!select || !tbody) return;
+  const direction = document.querySelector("button[data-store-direction]");
+  select.add(new Option("Letterboxd Rating", "letterboxd"));
+
+  const apply = (dir) => {
+    history.replaceState(null, "", `${location.pathname}${location.search}#letterboxd${dir === "asc" ? "-asc" : ""}`);
+    select.value = "letterboxd";
+    // The site's button holds the direction its next click switches to.
+    direction?.setAttribute("data-store-direction", dir === "asc" ? "desc" : "asc");
+    const ratingOf = (row) => {
+      const meta = catalogRowMeta(row);
+      return meta && cachedFilm(lbKey(meta))?.v?.rating;
+    };
+    tbody.append(...sortByRating([...tbody.querySelectorAll(CARD_SELECTOR)], ratingOf, dir));
+  };
+
+  // Capture phase, ahead of the site's own handlers, which navigate to a new ?sort= or ?direction=.
+  document.addEventListener(
+    "change",
+    (e) => {
+      if (e.target !== select) return;
+      if (select.value === "letterboxd") {
+        e.stopImmediatePropagation();
+        apply("desc");
+      } else if (ratingSortDir()) {
+        // The site builds its URL by appending to location.href; a hash would swallow the query.
+        history.replaceState(null, "", location.pathname + location.search);
+      }
+    },
+    true
+  );
+  direction?.addEventListener(
+    "click",
+    (e) => {
+      const dir = ratingSortDir();
+      if (!dir) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      apply(dir === "asc" ? "desc" : "asc");
+    },
+    true
+  );
+  const dir = ratingSortDir();
+  if (dir) apply(dir);
+}
+
 // Wait for the cache mirror so the first scan can paint every cached card at once.
-cacheReady.catch((err) => console.warn("[ebert] cache load failed", err)).then(start);
+cacheReady
+  .catch((err) => console.warn("[ebert] cache load failed", err))
+  .then(() => {
+    if (ON_CATALOG) {
+      setupFilters();
+      setupRatingSort();
+    }
+    start();
+  });
 handleDetailPage();
+// Pick up films logged or watchlisted since the last visit; marks repaint when the sync lands.
+chrome.runtime.sendMessage({ type: "syncUser", maxAge: USER_REFRESH_MS }).catch(() => {});

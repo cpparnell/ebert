@@ -1,0 +1,119 @@
+/* Criterion's dark chrome, like the badges. */
+:root {
+  --bg: #141414;
+  --field: #232323;
+  --line: #3a3a3a;
+  --text: #fff;
+  --secondary: rgb(190, 190, 187);
+  --muted: rgba(190, 190, 187, 0.7);
+  --green: #00e054;
+  --blue: #40bcf4;
+  --error: #ff7a6b;
+  color-scheme: dark;
+}
+
+body {
+  width: 300px;
+  margin: 0;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--secondary);
+  font: 400 13px/1.45 Montserrat, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+}
+
+h1 {
+  margin: 0 0 14px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.star {
+  color: var(--green);
+  font-weight: 400;
+}
+
+label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+}
+
+input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--green);
+}
+
+button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--text);
+  color: #000;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.link {
+  padding: 0;
+  background: none;
+  color: var(--secondary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+button.link:hover {
+  color: var(--text);
+}
+
+.hint {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hint svg {
+  width: 11px;
+  height: 11px;
+  vertical-align: -1px;
+}
+
+.eye {
+  color: var(--green);
+}
+
+.clock {
+  color: var(--blue);
+}
+
+.status {
+  margin: 12px 0 6px;
+  color: var(--secondary);
+}
+
+.status:empty {
+  display: none;
+}
+
+.status[data-state="not-found"],
+.status[data-state="error"] {
+  color: var(--error);
+}

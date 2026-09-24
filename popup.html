@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ebert</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1><span class="star">★</span> Ebert</h1>
+    <form id="form">
+      <label for="username">Your Letterboxd username</label>
+      <div class="row">
+        <input id="username" autocomplete="off" spellcheck="false" placeholder="Username or profile link" />
+        <button type="submit">Save</button>
+      </div>
+    </form>
+    <p class="hint">Marks films on Criterion you've watched <svg class="eye" viewBox="0 0 10 10" aria-label="eye"><path d="M0.8 5C2 2.9 3.4 1.9 5 1.9S8 2.9 9.2 5C8 7.1 6.6 8.1 5 8.1S2 7.1 0.8 5Z" fill="none" stroke="currentColor" stroke-width="1.1"/><circle cx="5" cy="5" r="1.5" fill="currentColor"/></svg> and films on your watchlist <svg class="clock" viewBox="0 0 10 10" aria-label="clock"><circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5 2.7V5l1.6 1.1" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>. It reads your public profile, so no login is needed.</p>
+    <p id="status" class="status" role="status"></p>
+    <button id="sync" class="link" type="button" hidden>Sync now</button>
+    <script src="lib/shared.js"></script>
+    <script src="lib/user.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

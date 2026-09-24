@@ -2,6 +2,7 @@
    translucent black pill, and the grey used for secondary text. */
 :root {
   --ebert-green: #00e054;
+  --ebert-blue: #40bcf4; /* Letterboxd's watchlist blue */
   --ebert-chip-bg: rgba(0, 0, 0, 0.62);
   --ebert-text: #fff;
   --ebert-text-secondary: rgb(190, 190, 187);
@@ -106,6 +107,240 @@
   }
 }
 
+/* ---------- The user's own marks ---------- */
+
+/* Letterboxd's own cues: a green eye for watched, a blue clock for the watchlist. */
+.ebert-mark {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  margin-left: 1px;
+}
+
+.ebert-mark svg,
+.ebert-you svg {
+  flex: none;
+  width: 11px;
+  height: 11px;
+}
+
+.ebert-mark--watched,
+.ebert-you--watched {
+  color: var(--ebert-green);
+}
+
+.ebert-mark--watchlist,
+.ebert-you--watchlist {
+  color: var(--ebert-blue);
+}
+
+/* The user's own score, beside the consensus and in the colour of the mark it belongs to. */
+.ebert-mark {
+  gap: 3px;
+}
+
+.ebert-mark-rating {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Catalog filters ---------- */
+
+/* Our group inside the site's Advanced Filters panel, which is light: #fff / #fafafa with
+   #252525 text. The panel puts a group off-canvas until it's the active one on narrow screens;
+   ours isn't in the site's group list, so it stays in flow at every width. */
+.ebert-filter-group {
+  position: static !important;
+  transform: none !important;
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* Padding needs to outrank `.filters .filter-group`, whose shorthand would otherwise zero it.
+   The site's groups end on a 50px margin under their last option list; ours is the last thing in
+   the panel, so it carries its own bottom gap or it sits flush against the end of the scroll. */
+.filters .ebert-filter-group.filter-group {
+  padding-top: 48px;
+  padding-bottom: 64px;
+}
+
+.ebert-filter-body {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* Subordinate to the group's own heading, which is the site's 12px uppercase label.
+   Specificity has to clear `.filters .filter-group h4`, which sets 20px. */
+.filters .ebert-filter-group h4.ebert-section-title {
+  margin: 0 0 12px;
+  color: #767676;
+  font: 600 11px/1.2 var(--ebert-font);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.ebert-section--off {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.ebert-hint {
+  margin: 10px 0 0;
+  color: #767676;
+  font: 400 12px/1.4 var(--ebert-font);
+}
+
+.ebert-hint[hidden] {
+  display: none;
+}
+
+.ebert-options {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+/* Same shape as the panel's own options: the checkbox is taken out of the flow and the dot is
+   drawn as the label's ::before, so these sit level with Genres and Decades. */
+/* Has to outrank the site's list resets, `ul li { margin-bottom: 1.2em }` and especially
+   `ul li:last-child { margin: 0 }`, which would drop the last option's 5px indent and leave it
+   sitting left of the ones above it. Values match `.filters .filter-group-option`. */
+.filters .ebert-options li.ebert-option {
+  position: relative;
+  padding: 0 0 0 32px;
+  margin: 0 0 0.1em 5px;
+  cursor: pointer;
+}
+
+.ebert-option input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.ebert-option label::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #cdcdcb;
+}
+
+.ebert-option input[type="checkbox"]:checked + label::before {
+  background: #252525;
+  border: 3px solid #fafafa;
+}
+
+.ebert-option:hover label::before,
+.ebert-option input[type="checkbox"]:focus-visible + label::before {
+  box-shadow: 0 0 0 1px #252525;
+}
+
+.ebert-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ebert-slider {
+  width: 180px;
+  accent-color: #252525;
+  cursor: pointer;
+}
+
+.ebert-slider-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: #252525;
+  font: 500 15px/1.2 var(--ebert-font);
+  font-variant-numeric: tabular-nums;
+}
+
+.ebert-slider-value .ebert-star {
+  color: #252525;
+}
+
+.ebert-any {
+  color: #767676;
+  font-weight: 400;
+}
+
+/* ---------- Status line over the table ---------- */
+
+/* The panel covers the table, so a filter's effect is only visible once it's closed. This shows
+   up only while a filter is on, and stays reachable however far down the catalog you are. */
+.ebert-status {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 5%;
+  background: #141414;
+  border-bottom: 2px solid #4a4a4a;
+  color: var(--ebert-text-secondary);
+  font: 400 13px/1.2 var(--ebert-font);
+}
+
+.ebert-status[hidden],
+.ebert-empty[hidden] {
+  display: none;
+}
+
+.ebert-status-label {
+  color: var(--ebert-green);
+  font-weight: 600;
+}
+
+.ebert-status-count {
+  margin-right: auto;
+  color: var(--ebert-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ebert-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--ebert-text-muted);
+  font: 600 12px/1 var(--ebert-font);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.ebert-link:hover,
+.ebert-link:focus-visible {
+  color: var(--ebert-text);
+}
+
+.ebert-empty {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 28px 5%;
+  background: #141414;
+  color: var(--ebert-text-secondary);
+  font: 400 14px/1.4 var(--ebert-font);
+}
+
+/* Beats .criterion-channel__tr's own display:block. */
+.ebert-hidden {
+  display: none !important;
+}
+
 /* ---------- Film detail page ---------- */
 
 .ebert-detail {
@@ -159,4 +394,24 @@
 .ebert-muted::before {
   content: "·";
   margin-right: 8px;
+}
+
+.ebert-you {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ebert-you::before {
+  content: "·";
+  margin-right: 3px;
+  color: var(--ebert-text-muted);
+}
+
+.ebert-you-rating {
+  color: var(--ebert-green);
+  letter-spacing: 0.05em;
 }

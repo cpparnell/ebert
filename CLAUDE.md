@@ -65,6 +65,22 @@ Predicts what the user would rate a film. **No training, no model file, no serve
 - Training samples exclude: films logged without a rating (no signal), consensus under `TASTE_MIN_RATING_COUNT` raters (too noisy a baseline to subtract), and **series installments** — their Letterboxd rating is the whole work's while the user's rating is the episode's, so the difference measures nothing.
 - `evaluateTaste` is leave-one-out over the user's own history, the only honest test available since there's no held-out set. It scores against two baselines: raw consensus, and consensus shifted by the global offset. Beating the first is easy and means little; **`centeredMae` is the one that matters**, because it asks whether the feature terms know anything beyond "this user rates high". If the model doesn't beat that on real data, ship consensus and delete the rest.
 - `recommendFilms` is ranking, not prediction: it drops watched films and caps one film per director, because sorting by score alone returns five films by the same director.
+
+**Measured, 2026-09-23 — it does not work, and nothing should paint it.** Evaluated against a real profile (342 rated films, all resolved on Letterboxd, leave-one-out):
+
+| | MAE |
+|---|---|
+| raw consensus | 0.468 |
+| consensus + global offset | 0.467 |
+| full model | 0.466 |
+
+A 0.4% improvement on a scale displayed to 0.1 stars — immaterial. Out-of-fold, the features' claimed deviation correlates with the actual one at **r = 0.13 (R² 1.7%)**, and the model's predictions span ±0.043 stars against an actual residual spread of ±0.583: it predicts a near-constant, correctly, because it has almost nothing to go on. On the 51-film Criterion-only subset it looked better (2% lift) — a permutation test put that at **p = 0.21**, and feeding it 6.8× the data shrank the lift to 0.17%, which is what a true effect of zero looks like.
+
+Two things worth keeping from the exercise:
+- **Genre carries what little signal exists; director carries almost none** — the opposite of the weights above. Genre-only at full weight was the best of seven configurations (1.33% over consensus, itself optimistic since it was selected on the same leave-one-out data). Director is hopeless by construction: 225 of 279 values were singletons even across a full 342-film history, so shrinkage correctly discards it. The learned genre offsets are at least coherent (horror −0.27, documentary +0.16, comedy +0.12).
+- **A taste model has to train on the user's whole Letterboxd history, not the catalog overlap.** Only 51 of those 342 ratings were Criterion films; the model doesn't need a film to be in the catalog to learn from it, only to have a consensus and features. Any retry has to fetch the full history — which means ~340 Letterboxd page fetches from the user's own browser, since Cloudflare 403s this from Node.
+
+The honest reading is that how far someone lands from the crowd on a given film is mostly idiosyncratic, and director/genre/decade/country don't capture it. Ranking is more forgiving than prediction, but r = 0.13 doesn't reorder much either. **Ship consensus.** The code stays because it's tested, gated and inert, and `evaluateTaste` is the thing to re-run before anyone tries this again — but wiring it to a badge would be selling a number we've measured to be empty.
 - Features come from `parseFilmPage`'s JSON-LD (`genre`, `countryOfOrigin`), so they cost no extra request; directors and year come from the Criterion catalog record, which is why `tasteFeatures` takes both objects. They add ~45 bytes/film uncompressed (~145KB over the catalog, ~35KB gzipped) — and `snapshot` is a `HOT_KEY`, so that lands on the first-paint read. If that read gets slow, taste features are the obvious thing to split into a lazily-fetched second file, since nothing about first paint needs them.
 
 ### Wikidata fallback (`scripts/wikidata.js`) — build only

@@ -30,7 +30,6 @@
         "lib/criterion.js",
         "lib/snapshot.js",
         "lib/user.js",
-        "lib/taste.js",
         "content.js"
       ],
       "css": [

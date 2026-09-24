@@ -18,7 +18,7 @@ There is no package.json, bundler, or linter. It's plain JS loaded directly by C
 ## Architecture
 
 ### Dual-environment `lib/` files
-`lib/letterboxd.js`, `lib/criterion.js`, `lib/snapshot.js`, and `lib/user.js` run in three places: the content script (listed in `manifest.json`), the background service worker (`importScripts`), and Node (`require`, from `scripts/build-snapshot.js`). `lib/taste.js` runs in two of them — the content script and Node — since nothing in the worker predicts. So:
+`lib/letterboxd.js`, `lib/criterion.js`, `lib/snapshot.js`, and `lib/user.js` run in three places: the content script (listed in `manifest.json`), the background service worker (`importScripts`), and Node (`require`, from `scripts/build-snapshot.js`). So:
 - They share globals in the browser and end with a `if (typeof module !== "undefined") module.exports = …` block for Node. Add any new export needed by the build script there.
 - No DOM APIs in them. The service worker and Node have no `DOMParser`, which is why HTML parsing uses regexes and JSON-LD.
 - `lib/shared.js` (cache, `limiter`, `politeFetch`, `DAY_MS`) uses `chrome.*` and is **browser-only**. Node code must not depend on it.
@@ -52,36 +52,6 @@ The catalog page ships all ~3,300 rows at once, so `setupFilters` in `content.js
 
 ### Matching (`lib/letterboxd.js`)
 `resolveFilm` first tries candidate Letterboxd slugs (`slugify` mirrors Letterboxd's slug scheme, with year/article variants) and accepts a result on a director or ±1-year match. Failing that, it uses Letterboxd autocomplete search, which requires 2 of 3 signals (director, title, year) to agree. It strips "version" and "(a.k.a. …)" suffixes, and tries the parent title (slugs, then search) for series installments: "Part/Episode N" suffixes, or an all-caps series prefix like "GREEN PORNO: Anchovy".
-
-### Taste model (`lib/taste.js`)
-Predicts what the user would rate a film. **No training, no model file, no server**: it's a set of shrunk averages rebuilt in milliseconds from `user` and the snapshot. Pure functions, so `tests/taste.test.js` covers all of it. Nothing paints it yet — the algorithm and its evaluation harness are complete, the UI isn't wired.
-
-- **It models the residual** (their rating − Letterboxd's consensus), never the rating. Consensus already encodes "is this film good"; the residual is the only part that's about this viewer. Modelling raw ratings would just re-derive what Letterboxd already told us.
-- Two levels. A **global offset** (they rate +0.3 against the crowd), applied to everything — which means it reorders nothing, and exists only so a displayed number sits on their scale. Then **per-feature offsets** for director, genre, decade and country, computed on residuals *net of* that global offset, so each measures "compared to how they usually differ". Only these discriminate between films, so only these recommend.
-- Centring on the global offset (rather than on zero) is what makes shrinkage correct: a sparse director shrinks toward *their own average*, not toward the crowd's. Shrinking raw residuals would drag every thin feature back to consensus and quietly cancel the global term.
-- `SHRINK_K = 4` — half weight at n=4. This is what stops one well-liked Hungarian film becoming "you love Hungarian cinema".
-- Weights (`TASTE_FEATURES`) sum to 0.9, not 1, and are **not renormalized** over the features a film happens to have. The four signals are correlated — a Bresson film is also French, also a drama — so this is a weighted average of overlapping estimators, and under-applying is the right guard against triple-counting one fact. A film missing a feature therefore falls back toward consensus rather than amplifying the features it does have.
-- **It declines.** `buildTasteModel` returns null below `TASTE_MIN_RATINGS` (30 usable rated films); `predictRating` returns null when a film's features clear less than `TASTE_MIN_EVIDENCE`, i.e. when only the global offset would carry it, which is no information at all. A missing prediction costs far less trust than a confident wrong one.
-- Training samples exclude: films logged without a rating (no signal), consensus under `TASTE_MIN_RATING_COUNT` raters (too noisy a baseline to subtract), and **series installments** — their Letterboxd rating is the whole work's while the user's rating is the episode's, so the difference measures nothing.
-- `evaluateTaste` is leave-one-out over the user's own history, the only honest test available since there's no held-out set. It scores against two baselines: raw consensus, and consensus shifted by the global offset. Beating the first is easy and means little; **`centeredMae` is the one that matters**, because it asks whether the feature terms know anything beyond "this user rates high". If the model doesn't beat that on real data, ship consensus and delete the rest.
-- `recommendFilms` is ranking, not prediction: it drops watched films and caps one film per director, because sorting by score alone returns five films by the same director.
-
-**Measured, 2026-09-23 — it does not work, and nothing should paint it.** Evaluated against a real profile (342 rated films, all resolved on Letterboxd, leave-one-out):
-
-| | MAE |
-|---|---|
-| raw consensus | 0.468 |
-| consensus + global offset | 0.467 |
-| full model | 0.466 |
-
-A 0.4% improvement on a scale displayed to 0.1 stars — immaterial. Out-of-fold, the features' claimed deviation correlates with the actual one at **r = 0.13 (R² 1.7%)**, and the model's predictions span ±0.043 stars against an actual residual spread of ±0.583: it predicts a near-constant, correctly, because it has almost nothing to go on. On the 51-film Criterion-only subset it looked better (2% lift) — a permutation test put that at **p = 0.21**, and feeding it 6.8× the data shrank the lift to 0.17%, which is what a true effect of zero looks like.
-
-Two things worth keeping from the exercise:
-- **Genre carries what little signal exists; director carries almost none** — the opposite of the weights above. Genre-only at full weight was the best of seven configurations (1.33% over consensus, itself optimistic since it was selected on the same leave-one-out data). Director is hopeless by construction: 225 of 279 values were singletons even across a full 342-film history, so shrinkage correctly discards it. The learned genre offsets are at least coherent (horror −0.27, documentary +0.16, comedy +0.12).
-- **A taste model has to train on the user's whole Letterboxd history, not the catalog overlap.** Only 51 of those 342 ratings were Criterion films; the model doesn't need a film to be in the catalog to learn from it, only to have a consensus and features. Any retry has to fetch the full history — which means ~340 Letterboxd page fetches from the user's own browser, since Cloudflare 403s this from Node.
-
-The honest reading is that how far someone lands from the crowd on a given film is mostly idiosyncratic, and director/genre/decade/country don't capture it. Ranking is more forgiving than prediction, but r = 0.13 doesn't reorder much either. **Ship consensus.** The code stays because it's tested, gated and inert, and `evaluateTaste` is the thing to re-run before anyone tries this again — but wiring it to a badge would be selling a number we've measured to be empty.
-- Features come from `parseFilmPage`'s JSON-LD (`genre`, `countryOfOrigin`), so they cost no extra request; directors and year come from the Criterion catalog record, which is why `tasteFeatures` takes both objects. They add ~45 bytes/film uncompressed (~145KB over the catalog, ~35KB gzipped) — and `snapshot` is a `HOT_KEY`, so that lands on the first-paint read. If that read gets slow, taste features are the obvious thing to split into a lazily-fetched second file, since nothing about first paint needs them.
 
 ### Wikidata fallback (`scripts/wikidata.js`) — build only
 Cloudflare 403s Letterboxd's search for any non-browser client, so the nightly Action can only guess slugs — and a film Criterion lists under a title Letterboxd doesn't use is unreachable that way. "La piscine" is the example: Letterboxd has it at `/film/the-swimming-pool/`, and `/film/la-piscine/` is a *different* film that returns 200. That left ~194 of 3,300 films unmatched for everyone.

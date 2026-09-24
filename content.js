@@ -103,7 +103,13 @@ const knownMeta = (card, href) => (ON_CATALOG ? catalogRowMeta(card) : cachedMet
 const metaFor = (card, href, wanted) =>
   ON_CATALOG ? Promise.resolve(catalogRowMeta(card)) : criterionMetaFor(href, wanted);
 
+// The snapshot and this install's own results are mirrored here too, so a film already known needs
+// no message at all. That matters more than one round trip: the MV3 worker sleeps after 30s idle,
+// so the first card of a visit would otherwise pay its cold start. Stale entries still go through
+// the worker, which serves the old value and refreshes behind it.
 async function lookup(film) {
+  const local = cachedFilm(lbKey(film));
+  if (local && !local.stale) return local.v;
   const res = await chrome.runtime.sendMessage({ type: "lookup", film });
   if (!res || res.error) throw new TransientError(`letterboxd-error: ${res?.error}`);
   return res.film;
@@ -230,7 +236,6 @@ async function handleDetailPage() {
   if (!meta) return;
   const film = await lookup({ ...meta, slug: criterionSlug(location.href) }).catch((err) => console.warn("[ebert]", err));
   if (!film) return;
-  await cacheReady.catch(() => {}); // the user's marks come from the storage mirror
   const badges = h1.parentElement.querySelector("h5.badges-container");
   renderDetail(badges || h1, film);
 }
@@ -473,6 +478,70 @@ function panelSection(title) {
   return section;
 }
 
+// Reads the pair back the way the ends are meant: a handle on an end is no bound there.
+function runtimeLabel({ runtimeMin, runtimeMax }) {
+  const floor = runtimeMin > RUNTIME_MIN;
+  const ceiling = runtimeMax < RUNTIME_MAX;
+  if (!floor && !ceiling) return null; // the whole track: no filter at all
+  if (floor && ceiling) return runtimeMin === runtimeMax ? `${runtimeMin} min` : `${runtimeMin} to ${runtimeMax} min`;
+  return floor ? `${runtimeMin} min and over` : `${runtimeMax} min and under`;
+}
+
+// Runtime is a range, and HTML has no two-handle slider. Two range inputs are stacked on one
+// track instead, each drawing only its thumb (the CSS hides their own tracks and paints ours), so
+// both keep native focus and arrow keys — which a div-and-pointer-events widget would give up.
+// Each handle pushes the other rather than stopping against it, so neither can be crossed.
+function rangeSlider(read, commit) {
+  const rangeInput = (which, label) => {
+    const input = document.createElement("input");
+    input.type = "range";
+    input.className = `ebert-range-input ebert-range-input--${which}`;
+    input.min = RUNTIME_MIN;
+    input.max = RUNTIME_MAX;
+    input.step = RUNTIME_STEP;
+    input.setAttribute("aria-label", label);
+    return input;
+  };
+  const lo = rangeInput("lo", "Shortest runtime, in minutes");
+  const hi = rangeInput("hi", "Longest runtime, in minutes");
+  const fill = el("div", "ebert-range-fill");
+  const track = el("div", "ebert-range");
+  track.append(fill, lo, hi);
+  const value = el("span", "ebert-slider-value");
+  const row = el("div", "ebert-slider-row");
+  row.append(track, value);
+
+  // Both ends of the fill land on a knob's centre, and a knob sits half its own width inside the
+  // rail, so the offsets are measured the way the native track measures them.
+  const frac = (n) => (n - RUNTIME_MIN) / (RUNTIME_MAX - RUNTIME_MIN);
+  const atKnob = (f) => `calc(8px + ${f} * (100% - 16px))`;
+  const sync = () => {
+    const f = read();
+    lo.value = f.runtimeMin;
+    hi.value = f.runtimeMax;
+    fill.style.left = atKnob(frac(f.runtimeMin));
+    fill.style.right = atKnob(1 - frac(f.runtimeMax));
+    // With both handles on the same end only one can be on top, and it has to be the one that can
+    // still move: at the far end that's the low handle, everywhere else the high one.
+    lo.classList.toggle("ebert-range-input--front", f.runtimeMin > (RUNTIME_MIN + RUNTIME_MAX) / 2);
+    const label = runtimeLabel(f);
+    value.replaceChildren(label ? el("span", null, label) : el("span", "ebert-any", "Any length"));
+  };
+
+  lo.addEventListener("input", () => {
+    const v = +lo.value;
+    commit({ runtimeMin: v, runtimeMax: Math.max(v, read().runtimeMax) });
+    sync();
+  });
+  hi.addEventListener("input", () => {
+    const v = +hi.value;
+    commit({ runtimeMax: v, runtimeMin: Math.min(v, read().runtimeMin) });
+    sync();
+  });
+
+  return { row, sync };
+}
+
 function setupFilters() {
   const table = document.querySelector(".criterion-channel__gridview");
   const host = table?.closest(".max-width-container");
@@ -500,6 +569,7 @@ function setupFilters() {
   const sliderValue = el("span", "ebert-slider-value");
   const syncSlider = () => {
     slider.value = filters.minRating;
+    slider.style.setProperty("--ebert-fill", filters.minRating / MAX_MIN_RATING);
     sliderValue.replaceChildren(
       ...(filters.minRating
         ? [el("span", "ebert-star", "★"), el("span", null, `${filters.minRating.toFixed(1)} and up`)]
@@ -518,10 +588,10 @@ function setupFilters() {
 
   // Runtime needs a snapshot built since runtimes were added; until then there's nothing to ask.
   const hasRuntime = catalogRows().some((row) => rowFilm(row).runtime);
-  const runtime = hasRuntime ? panelChoices(RUNTIME_BANDS, () => filters.runtime, (v) => commit({ runtime: v })) : null;
+  const runtime = hasRuntime ? rangeSlider(() => filters, commit) : null;
   if (runtime) {
     const section = panelSection("Runtime");
-    section.append(runtime.list);
+    section.append(runtime.row);
     body.append(section);
   }
 
@@ -666,16 +736,35 @@ function setupRatingSort() {
   if (dir) apply(dir);
 }
 
-// Wait for the cache mirror so the first scan can paint every cached card at once.
-cacheReady
-  .catch((err) => console.warn("[ebert] cache load failed", err))
-  .then(() => {
-    if (ON_CATALOG) {
-      setupFilters();
-      setupRatingSort();
-    }
-    start();
+// This script runs at document_start, so the cache read above is already in flight while the page
+// is still parsing. Painting needs both it and the DOM: the mirror so the first scan can badge every
+// known card at once, and the markup the cards live in. Cards added later are caught by the observer.
+const domReady =
+  document.readyState === "loading"
+    ? new Promise((resolve) => document.addEventListener("DOMContentLoaded", resolve, { once: true }))
+    : Promise.resolve();
+
+const painting = Promise.all([
+  cacheReady.catch((err) => console.warn("[ebert] cache load failed", err)),
+  domReady,
+]).then(() => {
+  start();
+  handleDetailPage();
+});
+
+// The catalog's sort menu and Advanced Filters panel are built by the site's own scripts, and both
+// bind their handlers at init; ours have to go in after that, so they wait for load rather than
+// DOMContentLoaded. Badges don't — they're already going up by then.
+if (ON_CATALOG) {
+  const loaded =
+    document.readyState === "complete"
+      ? Promise.resolve()
+      : new Promise((resolve) => window.addEventListener("load", resolve, { once: true }));
+  Promise.all([painting, loaded]).then(() => {
+    setupFilters();
+    setupRatingSort();
   });
-handleDetailPage();
+}
+
 // Pick up films logged or watchlisted since the last visit; marks repaint when the sync lands.
 chrome.runtime.sendMessage({ type: "syncUser", maxAge: USER_REFRESH_MS }).catch(() => {});

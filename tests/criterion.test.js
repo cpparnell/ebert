@@ -4,9 +4,11 @@ const {
   sortByRating,
   normalizeFilters,
   isDefaultFilters,
-  inRuntimeBand,
+  inRuntimeRange,
   matchesFilters,
   DEFAULT_FILTERS,
+  RUNTIME_MIN,
+  RUNTIME_MAX,
 } = require("../lib/criterion.js");
 
 const films = [
@@ -39,30 +41,57 @@ test("normalizeFilters repairs whatever comes back from storage", () => {
   assert.deepEqual(normalizeFilters(undefined), DEFAULT_FILTERS);
   assert.deepEqual(normalizeFilters({ minRating: "3.7", seen: "watched" }), {
     minRating: 3.7,
-    runtime: null,
+    runtimeMin: RUNTIME_MIN,
+    runtimeMax: RUNTIME_MAX,
     seen: "watched",
   });
-  // Out of range, and values no control can produce.
-  assert.deepEqual(normalizeFilters({ minRating: 9, runtime: "epic", seen: "nope" }), {
+  // Out of range, and values no control can produce. An unreadable bound opens back up rather
+  // than hiding rows nothing can bring back.
+  assert.deepEqual(normalizeFilters({ minRating: 9, runtimeMin: 5, runtimeMax: "wide", seen: "nope" }), {
     minRating: 4.5,
-    runtime: null,
+    runtimeMin: RUNTIME_MIN,
+    runtimeMax: RUNTIME_MAX,
     seen: "all",
   });
+  // Off-step values snap to the slider's own stops.
+  assert.deepEqual(normalizeFilters({ runtimeMin: 63, runtimeMax: 141.5 }), {
+    ...DEFAULT_FILTERS,
+    runtimeMin: 65,
+    runtimeMax: 140,
+  });
+  // A crossed pair would match nothing; the low bound gives way.
+  assert.deepEqual(normalizeFilters({ runtimeMin: 150, runtimeMax: 90 }), {
+    ...DEFAULT_FILTERS,
+    runtimeMin: 90,
+    runtimeMax: 90,
+  });
+  // The old band filter is gone; a value stored by that version doesn't come back as one.
+  assert.ok(isDefaultFilters(normalizeFilters({ runtime: "short" })));
   // Decade and country were dropped; leftovers from an older version don't come back.
   assert.deepEqual(normalizeFilters({ decades: [1960], countries: ["Japan"] }), DEFAULT_FILTERS);
   assert.ok(isDefaultFilters(normalizeFilters({})));
   assert.ok(!isDefaultFilters(normalizeFilters({ seen: "unseen" })));
 });
 
-test("runtime bands are min-inclusive and max-exclusive, and exclude unknown runtimes", () => {
-  assert.ok(inRuntimeBand(39, "short"));
-  assert.ok(!inRuntimeBand(40, "short"));
-  assert.ok(inRuntimeBand(40, "medium"));
-  assert.ok(inRuntimeBand(90, "feature"));
-  assert.ok(!inRuntimeBand(120, "feature"));
-  assert.ok(inRuntimeBand(207, "long"));
-  assert.ok(!inRuntimeBand(null, "long"));
-  assert.ok(inRuntimeBand(null, null)); // no band chosen: everything passes
+const range = (runtimeMin, runtimeMax) => normalizeFilters({ runtimeMin, runtimeMax });
+
+test("a runtime handle resting on an end is no bound there", () => {
+  // The whole track: nothing is being asked, so even an unknown runtime passes.
+  assert.ok(inRuntimeRange(null, range(RUNTIME_MIN, RUNTIME_MAX)));
+  // "40 min and under" reaches below the slider's own floor.
+  assert.ok(inRuntimeRange(12, range(RUNTIME_MIN, RUNTIME_MIN)));
+  assert.ok(!inRuntimeRange(45, range(RUNTIME_MIN, RUNTIME_MIN)));
+  // "180 min and over" reaches past its ceiling.
+  assert.ok(inRuntimeRange(566, range(RUNTIME_MAX, RUNTIME_MAX)));
+  assert.ok(!inRuntimeRange(120, range(RUNTIME_MAX, RUNTIME_MAX)));
+});
+
+test("a runtime range is inclusive at both ends, and excludes unknown runtimes", () => {
+  assert.ok(inRuntimeRange(90, range(90, 120)));
+  assert.ok(inRuntimeRange(120, range(90, 120)));
+  assert.ok(!inRuntimeRange(85, range(90, 120)));
+  assert.ok(!inRuntimeRange(125, range(90, 120)));
+  assert.ok(!inRuntimeRange(null, range(90, 120)));
 });
 
 const seven = { rating: 4.5, runtime: 207, mark: null };
@@ -75,18 +104,18 @@ test("matchesFilters combines rating, runtime and watched state", () => {
   const f = (patch) => normalizeFilters({ ...DEFAULT_FILTERS, ...patch });
   assert.ok(matchesFilters(seven, f({ minRating: 4.2 })));
   assert.ok(!matchesFilters({ ...seven, rating: 3.9 }, f({ minRating: 4.2 })));
-  assert.ok(matchesFilters(seven, f({ runtime: "long" })));
-  assert.ok(!matchesFilters(seven, f({ runtime: "feature" })));
+  assert.ok(matchesFilters(seven, f({ runtimeMin: RUNTIME_MAX })));
+  assert.ok(!matchesFilters(seven, f({ runtimeMin: 90, runtimeMax: 120 })));
   // Both at once; the runtime alone disagrees.
-  assert.ok(matchesFilters(seven, f({ minRating: 4, runtime: "long" })));
-  assert.ok(!matchesFilters(seven, f({ minRating: 4, runtime: "short" })));
+  assert.ok(matchesFilters(seven, f({ minRating: 4, runtimeMin: RUNTIME_MAX })));
+  assert.ok(!matchesFilters(seven, f({ minRating: 4, runtimeMax: RUNTIME_MIN })));
 });
 
 test("an active filter hides a film whose rating or runtime isn't known yet", () => {
   const unknown = { rating: null, runtime: null, mark: null };
   assert.ok(matchesFilters(unknown, DEFAULT_FILTERS));
   assert.ok(!matchesFilters(unknown, normalizeFilters({ minRating: 0.1 })));
-  assert.ok(!matchesFilters(unknown, normalizeFilters({ runtime: "short" })));
+  assert.ok(!matchesFilters(unknown, normalizeFilters({ runtimeMax: RUNTIME_MIN })));
   // The watched filter asks about the user, not the film, so it still answers.
   assert.ok(matchesFilters(unknown, normalizeFilters({ seen: "unseen" })));
 });

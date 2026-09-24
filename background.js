@@ -27,11 +27,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 async function lookup(film) {
   const key = lbKey(film);
-  const cached = await cacheGet(key);
-  // The shared snapshot covers the catalog. Its misses still get a live lookup: the nightly build
-  // runs without browser cookies, so Letterboxd's search fallback is blocked for it.
+  // The shared snapshot covers the catalog, and it's a hot key, so answering from it costs only the
+  // small read — not the whole store. Its misses still get a live lookup: the nightly build runs
+  // without browser cookies, so Letterboxd's search fallback is blocked for it.
+  await cacheReady;
   const shared = snapshotByKey(cachePeek(SNAPSHOT_KEY)?.v).get(key);
   if (shared) return shared;
+  const cached = await cacheGet(key);
   if (cached && !cached.stale) return cached.v;
   const pending = refresh(key, film);
   // Ratings drift slowly, so a stale hit is served now and refreshed behind it.

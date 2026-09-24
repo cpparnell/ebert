@@ -252,10 +252,58 @@
   gap: 12px;
 }
 
+/* Rating (one knob) and runtime (two) are drawn by the same rules so they read as one control in
+   two forms. That means replacing Chrome's native range rather than tinting it with accent-color:
+   a two-handle range has to be hand-drawn anyway, and only a shared rail and knob keep the pair
+   from drifting as the native rendering changes under them. Sizes here are the native ones this
+   panel used to show — an 8px rail under a 16px knob. */
+.ebert-slider,
+.ebert-range-input {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  margin: 0;
+  background: none;
+  cursor: pointer;
+}
+
 .ebert-slider {
   width: 180px;
-  accent-color: #252525;
+}
+
+/* The filled part runs to the middle of the knob, which sits half its own width inside each end. */
+.ebert-slider::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 4px;
+  background:
+    linear-gradient(#252525, #252525) left / calc(8px + var(--ebert-fill, 0) * (100% - 16px)) 100% no-repeat,
+    #e3e3e3;
+}
+
+.ebert-slider::-webkit-slider-thumb,
+.ebert-range-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #252525;
   cursor: pointer;
+}
+
+/* Centres the 16px knob on the 8px rail; the range inputs carry their own 16px transparent track. */
+.ebert-slider::-webkit-slider-thumb {
+  margin-top: -4px;
+}
+
+.ebert-slider:focus,
+.ebert-range-input:focus {
+  outline: none;
+}
+
+.ebert-slider:focus-visible::-webkit-slider-thumb,
+.ebert-range-input:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(37, 37, 37, 0.3);
 }
 
 .ebert-slider-value {
@@ -274,6 +322,62 @@
 .ebert-any {
   color: #767676;
   font-weight: 400;
+}
+
+/* Runtime's two-handle range: two inputs stacked on one rail, each contributing only its knob.
+   Their own tracks are transparent and the rail and fill below are drawn instead, so the pair
+   reads as a single control while both keep native focus and arrow keys. */
+.ebert-range {
+  position: relative;
+  width: 180px;
+  height: 16px;
+}
+
+.ebert-range::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 0;
+  right: 0;
+  height: 8px;
+  border-radius: 4px;
+  background: #e3e3e3;
+}
+
+.ebert-range-fill {
+  position: absolute;
+  top: 4px;
+  height: 8px;
+  background: #252525;
+}
+
+.ebert-range-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  /* Only the knobs take the pointer, so the one nearest the cursor is always what gets grabbed,
+     whichever input happens to be on top. */
+  pointer-events: none;
+  z-index: 2;
+}
+
+.ebert-range-input--hi {
+  z-index: 3;
+}
+
+.ebert-range-input--front {
+  z-index: 4;
+}
+
+.ebert-range-input::-webkit-slider-runnable-track {
+  height: 16px;
+  background: none;
+  border: none;
+}
+
+.ebert-range-input::-webkit-slider-thumb {
+  pointer-events: auto;
 }
 
 /* ---------- Status line over the table ---------- */
